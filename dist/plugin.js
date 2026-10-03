@@ -1,9 +1,28 @@
 var PluginModule = (() => {
   const defaultHeaders = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Referer": "https://yoturkish.to/"
   };
+
+  function base64Encode(str) {
+    if (typeof btoa === "function") {
+      try { return btoa(str); } catch (e) {}
+    }
+    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
+    let output = "";
+    for (let i = 0; i < str.length; i += 3) {
+      let b1 = str.charCodeAt(i);
+      let b2 = i + 1 < str.length ? str.charCodeAt(i + 1) : NaN;
+      let b3 = i + 2 < str.length ? str.charCodeAt(i + 2) : NaN;
+      let e1 = b1 >> 2;
+      let e2 = ((b1 & 3) << 4) | (isNaN(b2) ? 0 : b2 >> 4);
+      let e3 = isNaN(b2) ? 64 : ((b2 & 15) << 2) | (isNaN(b3) ? 0 : b3 >> 6);
+      let e4 = isNaN(b3) ? 64 : b3 & 63;
+      output += chars.charAt(e1) + chars.charAt(e2) + chars.charAt(e3) + chars.charAt(e4);
+    }
+    return output;
+  }
 
   function decodeBase64(str) {
     if (typeof atob === "function") {
@@ -53,7 +72,8 @@ var PluginModule = (() => {
     try {
       let res = await http_get("https://yoturkish.to/home/", defaultHeaders);
       if (!res || !res.body) {
-        return callback({ success: false, errorCode: "SITE_OFFLINE", message: "No response from site" });
+        if (callback && typeof callback === "function") callback({ success: false, errorCode: "SITE_OFFLINE", message: "No response from site" });
+        return { "New Episodes": [], "Turkish Series": [] };
       }
 
       let html = res.body;
@@ -99,15 +119,20 @@ var PluginModule = (() => {
         }));
       }
 
-      callback({
-        success: true,
-        data: {
-          "New Episodes": newEpisodes,
-          "Turkish Series": seriesList
-        }
-      });
+      let homeData = {
+        "New Episodes": newEpisodes,
+        "Turkish Series": seriesList
+      };
+
+      if (callback && typeof callback === "function") {
+        callback({ success: true, data: homeData });
+      }
+      return homeData;
     } catch (e) {
-      callback({ success: false, errorCode: "FETCH_ERROR", message: e.message || String(e) });
+      if (callback && typeof callback === "function") {
+        callback({ success: false, errorCode: "FETCH_ERROR", message: e.message || String(e) });
+      }
+      return { "New Episodes": [], "Turkish Series": [] };
     }
   }
 
@@ -116,7 +141,8 @@ var PluginModule = (() => {
       let searchUrl = "https://yoturkish.to/?s=" + encodeURIComponent(query);
       let res = await http_get(searchUrl, defaultHeaders);
       if (!res || !res.body) {
-        return callback({ success: true, data: [] });
+        if (callback && typeof callback === "function") callback({ success: true, data: [] });
+        return [];
       }
 
       let postRegex = /<a\s+[^>]*href="([^"]+)"\s+title="([^"]+)"\s+class="poster">[\s\S]*?<img[^>]+src="([^"]+)"/gi;
@@ -135,9 +161,11 @@ var PluginModule = (() => {
         }));
       }
 
-      callback({ success: true, data: items });
+      if (callback && typeof callback === "function") callback({ success: true, data: items });
+      return items;
     } catch (e) {
-      callback({ success: true, data: [] });
+      if (callback && typeof callback === "function") callback({ success: true, data: [] });
+      return [];
     }
   }
 
@@ -145,7 +173,8 @@ var PluginModule = (() => {
     try {
       let res = await http_get(url, defaultHeaders);
       if (!res || !res.body) {
-        return callback({ success: false, errorCode: "PARSE_ERROR", message: "Failed to load page" });
+        if (callback && typeof callback === "function") callback({ success: false, errorCode: "PARSE_ERROR", message: "Failed to load page" });
+        return null;
       }
 
       let html = res.body;
@@ -207,9 +236,11 @@ var PluginModule = (() => {
         episodes: episodes
       });
 
-      callback({ success: true, data: item });
+      if (callback && typeof callback === "function") callback({ success: true, data: item });
+      return item;
     } catch (e) {
-      callback({ success: false, errorCode: "PARSE_ERROR", message: e.message || String(e) });
+      if (callback && typeof callback === "function") callback({ success: false, errorCode: "PARSE_ERROR", message: e.message || String(e) });
+      return null;
     }
   }
 
@@ -236,11 +267,10 @@ var PluginModule = (() => {
           } catch (e) {}
         }
 
-        // 2. Process each server URL
+        // 2. Process each server URL (Engifuosi is the primary direct HLS CDN on YoTurkish)
         for (let sUrl of serverUrls) {
           if (!sUrl.startsWith("http")) continue;
 
-          // Engifuosi: Extract direct HLS master.m3u8 (Very fast & reliable 1080p)
           if (sUrl.includes("engifuosi")) {
             try {
               let eRes = await http_get(sUrl, {
@@ -252,120 +282,78 @@ var PluginModule = (() => {
                 if (unpacked) {
                   let m3u8Match = unpacked.match(/https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*/i);
                   if (m3u8Match) {
+                    let masterUrl = m3u8Match[0];
+
+                    // Priority 1: Master HLS Stream (Auto Quality / 1080p)
                     streams.push(new StreamResult({
-                      source: "Engifuosi [Direct FHD]",
-                      name: "Engi (1080p Direct)",
-                      url: m3u8Match[0],
-                      quality: 1080,
-                      headers: { "Referer": "https://engifuosi.com/" }
+                      source: "YoTurkish 1080p FHD (Engi Master)",
+                      name: "Engi FHD (Auto)",
+                      url: masterUrl,
+                      quality: "1080p",
+                      type: "m3u8",
+                      headers: {
+                        "Referer": "https://engifuosi.com/",
+                        "User-Agent": defaultHeaders["User-Agent"]
+                      }
+                    }));
+
+                    // Priority 2: Direct Quality-Specific Sub-Streams
+                    let prefixMatch = masterUrl.match(/^(https?:\/\/[^\/]+\/hls2\/[^\/]+\/[^\/]+\/)([^\/]+)_,([^.]+)\.urlset\/master\.m3u8(\?.*)?$/i);
+                    if (prefixMatch) {
+                      let base = prefixMatch[1];
+                      let slug = prefixMatch[2];
+                      let tags = prefixMatch[3].split(",").filter(Boolean);
+                      let query = prefixMatch[4] || "";
+
+                      // Sort tags so higher qualities come first (x = 1080p, h = 720p, n = 480p)
+                      tags.sort((a, b) => (a === 'x' ? -1 : b === 'x' ? 1 : a === 'h' ? -1 : 1));
+
+                      for (let tag of tags) {
+                        let quality = tag === 'x' ? '1080p' : tag === 'h' ? '720p' : tag === 'n' ? '480p' : 'Auto';
+                        let subUrl = base + slug + '_' + tag + '/index-v1-a1.m3u8' + query;
+                        streams.push(new StreamResult({
+                          source: "YoTurkish " + quality + " (Direct)",
+                          name: "Engi " + quality,
+                          url: subUrl,
+                          quality: quality,
+                          type: "m3u8",
+                          headers: {
+                            "Referer": "https://engifuosi.com/",
+                            "User-Agent": defaultHeaders["User-Agent"]
+                          }
+                        }));
+                      }
+                    }
+
+                    // Priority 3: Magic Proxy Stream (for players that don't forward headers)
+                    streams.push(new StreamResult({
+                      source: "YoTurkish 1080p (Fast Proxy)",
+                      name: "Engi Proxy 1080p",
+                      url: "MAGIC_PROXY_v1" + base64Encode(masterUrl),
+                      quality: "1080p",
+                      type: "m3u8",
+                      headers: {
+                        "Referer": "https://engifuosi.com/",
+                        "User-Agent": defaultHeaders["User-Agent"]
+                      }
                     }));
                   }
                 }
               }
             } catch (err) {}
-
-            streams.push(new StreamResult({
-              source: "Engifuosi [Embed]",
-              name: "Engi Embed",
-              url: sUrl,
-              quality: 1080,
-              headers: { "Referer": episodeUrl }
-            }));
-          } else if (sUrl.includes("vidmoly")) {
-            // VidMoly: extract direct master.m3u8
-            try {
-              let vRes = await http_get(sUrl, {
-                "User-Agent": defaultHeaders["User-Agent"],
-                "Referer": episodeUrl
-              });
-              if (vRes && vRes.body) {
-                let m3u8Match = vRes.body.match(/https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*/i);
-                if (m3u8Match) {
-                  streams.push(new StreamResult({
-                    source: "VidMoly [Direct FHD]",
-                    name: "VidMoly (1080p Direct)",
-                    url: m3u8Match[0],
-                    quality: 1080,
-                    headers: { "Referer": "https://vidmoly.biz/" }
-                  }));
-                }
-              }
-            } catch (err) {}
-
-            streams.push(new StreamResult({
-              source: "VidMoly [Embed]",
-              name: "VidMoly Embed",
-              url: sUrl,
-              quality: 1080,
-              headers: { "Referer": episodeUrl }
-            }));
-          } else if (sUrl.includes("voe")) {
-            streams.push(new StreamResult({
-              source: "VOE [Player]",
-              name: "VOE",
-              url: sUrl,
-              quality: 1080,
-              headers: { "Referer": episodeUrl }
-            }));
-          } else if (sUrl.includes("rufiiguta")) {
-            streams.push(new StreamResult({
-              source: "Rufii [Player]",
-              name: "Rufii",
-              url: sUrl,
-              quality: 1080,
-              headers: { "Referer": episodeUrl }
-            }));
-          } else {
-            streams.push(new StreamResult({
-              source: "Server [Embed]",
-              name: "Server",
-              url: sUrl,
-              quality: 1080,
-              headers: { "Referer": episodeUrl }
-            }));
           }
         }
-
-        // 3. Check for any direct media links in the episode page
-        let mediaRegex = /https?:\/\/[^\s"'<>]+\.(?:m3u8|mp4)[^\s"'<>]*/gi;
-        let mm;
-        while ((mm = mediaRegex.exec(html)) !== null) {
-          let mUrl = mm[0].trim();
-          streams.push(new StreamResult({
-            source: "YoTurkish Direct",
-            name: "Direct",
-            url: mUrl,
-            quality: 1080,
-            headers: { "Referer": episodeUrl }
-          }));
-        }
       }
 
-      // Fallback
-      if (streams.length === 0) {
-        streams.push(new StreamResult({
-          source: "YoTurkish Web",
-          name: "Web Player",
-          url: episodeUrl,
-          quality: 1080,
-          headers: { "Referer": "https://yoturkish.to/" }
-        }));
+      if (callback && typeof callback === "function") {
+        callback({ success: true, data: streams });
       }
-
-      callback({ success: true, data: streams });
+      return streams;
     } catch (e) {
-      callback({
-        success: true,
-        data: [
-          new StreamResult({
-            source: "YoTurkish Web",
-            name: "Web Player",
-            url: episodeUrl,
-            quality: 1080,
-            headers: { "Referer": "https://yoturkish.to/" }
-          })
-        ]
-      });
+      if (callback && typeof callback === "function") {
+        callback({ success: true, data: [] });
+      }
+      return [];
     }
   }
 
