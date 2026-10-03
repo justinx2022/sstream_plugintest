@@ -59,11 +59,10 @@ class ExampleProvider : MainAPI() {
         val episodes = document.select("div#episodes a.episod").mapIndexed { index, ep ->
             val epHref = ep.attr("href")
             val epName = ep.text().trim()
-            Episode(
-                data = fixUrl(epHref),
-                name = epName.ifBlank { "Episode ${index + 1}" },
-                episode = index + 1
-            )
+            newEpisode(fixUrl(epHref)) {
+                this.name = epName.ifBlank { "Episode ${index + 1}" }
+                this.episode = index + 1
+            }
         }
 
         return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
@@ -82,11 +81,12 @@ class ExampleProvider : MainAPI() {
         val document = app.get(data).document
 
         // Extract every iframe found inside the player container
-        val iframes = document.select("div#player iframe").map { it.attr("src") }
-        for (iframeUrl in iframes) {
-            val fixed = fixUrl(iframeUrl)
-            // loadExtractor automatically checks CloudStream's built-in extractors
-            loadExtractor(fixed, subtitleCallback, callback)
+        val iframes = document.select("div#player iframe")
+        for (iframe in iframes) {
+            val src = iframe.attr("src")
+            if (src.isNotBlank()) {
+                loadExtractor(fixUrl(src), subtitleCallback, callback)
+            }
         }
         return true
     }
