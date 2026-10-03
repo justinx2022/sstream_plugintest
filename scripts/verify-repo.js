@@ -107,8 +107,14 @@ for (const p of plugins) {
     }
   }
 
-  // Derive expected file name
-  const skyFilename = `${p.packageName}.sky`;
+  // Derive expected file name from URL
+  let skyFilename;
+  try {
+    const u = new URL(p.url);
+    skyFilename = path.basename(u.pathname);
+  } catch (e) {
+    skyFilename = `${p.packageName}.sky`;
+  }
   const skyPath = path.join(DIST_DIR, skyFilename);
 
   if (!fs.existsSync(skyPath)) {

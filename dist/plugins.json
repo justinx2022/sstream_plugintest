@@ -20,7 +20,7 @@
   {
     "packageName": "dev.justin.wlext",
     "name": "WLEXT (Telenovelas)",
-    "version": 1,
+    "version": 2,
     "baseUrl": "https://wlext.is",
     "description": "WLEXT Telenovela World with English Subtitles and Dubbing",
     "authors": [
@@ -34,6 +34,6 @@
     "categories": [
       "TvSeries"
     ],
-    "url": "https://raw.githubusercontent.com/justinx2022/sstream_plugintest/main/dist/dev.justin.wlext.sky"
+    "url": "https://raw.githubusercontent.com/justinx2022/sstream_plugintest/main/dist/dev.justin.wlext_v2.sky"
   }
 ]
