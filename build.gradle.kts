@@ -21,7 +21,7 @@ buildscript {
         classpath("org.ow2.asm:asm-tree:9.9.1")
         classpath("com.github.vidstige:jadb:v1.2.1")
         // Local Cloudstream Gradle plugin jar (bypasses JitPack POM metadata bug)
-        classpath(name = "cloudstream")
+        classpath(group = "", name = "cloudstream")
     }
 }
 
