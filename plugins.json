@@ -1,0 +1,20 @@
+[
+    {
+        "fileHash": "sha256-4788183e8734c3bee24169e96362561c66628fbfe5c3de456f91fd1ca82fe4a5",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/justinx2022/sstream_plugintest",
+        "fileSize": 9464,
+        "status": 1,
+        "authors": [
+            "Cloudburst"
+        ],
+        "tvTypes": [
+            "Others"
+        ],
+        "version": 1,
+        "internalName": "ExampleProvider",
+        "description": "Lorem Ipsum",
+        "url": "https://raw.githubusercontent.com/justinx2022/sstream_plugintest/builds/ExampleProvider.cs3",
+        "name": "ExampleProvider"
+    }
+]
