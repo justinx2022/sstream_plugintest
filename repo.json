@@ -1,0 +1,9 @@
+{
+  "name": "YoTurkish Repo",
+  "packageName": "dev.justin.yoturkish",
+  "description": "YoTurkish Turkish Series with English Subtitles",
+  "manifestVersion": 1,
+  "pluginLists": [
+    "https://raw.githubusercontent.com/justinx2022/sstream_plugintest/main/dist/plugins.json"
+  ]
+}

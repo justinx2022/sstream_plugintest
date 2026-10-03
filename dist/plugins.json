@@ -1,0 +1,20 @@
+[
+  {
+    "packageName": "dev.justin.yoturkish",
+    "name": "YoTurkish",
+    "version": 1,
+    "baseUrl": "https://yoturkish.to",
+    "description": "YoTurkish Turkish Series with English Subtitles",
+    "authors": [
+      "Justin"
+    ],
+    "languages": [
+      "en",
+      "tr"
+    ],
+    "categories": [
+      "TvSeries"
+    ],
+    "url": "https://raw.githubusercontent.com/justinx2022/sstream_plugintest/main/dist/dev.justin.yoturkish.sky"
+  }
+]
