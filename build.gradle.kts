@@ -7,14 +7,19 @@ buildscript {
     repositories {
         google()
         mavenCentral()
-        // Shitpack repo which contains our tools and dependencies
-        maven("https://jitpack.io")
+        // JitPack repo — use artifact-only metadata to bypass POM version mismatch on Gradle 8
+        maven {
+            url = uri("https://jitpack.io")
+            metadataSources {
+                artifact()
+            }
+        }
     }
 
     dependencies {
         classpath("com.android.tools.build:gradle:8.7.3")
         // Cloudstream gradle plugin which makes everything work and builds plugins
-        classpath("com.github.recloudstream:gradle:master-32895aedb6-1")
+        classpath("com.github.recloudstream:gradle:32895aedb6366f5075cb99bbd2e6ce0a7cac325d")
         classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.1.0")
     }
 }
