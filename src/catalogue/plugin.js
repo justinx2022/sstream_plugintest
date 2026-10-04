@@ -20,7 +20,8 @@ var PluginModule = (() => {
 
     var CINEMETA_CATALOG = 'https://cinemeta-catalogs.strem.io/top/catalog';
     var CINEMETA_V3 = 'https://v3-cinemeta.strem.io';
-    var TORRENTIO_BASE = 'https://torrentio.strem.fun';
+    var RD_TOKEN = 'H5CQE7TS24TZAC63T6JEBRELTLBNL36N6F37TYMX3XI3WQPHLIBA';
+    var TORRENTIO_BASE = 'https://torrentio.strem.fun/realdebrid=' + RD_TOKEN;
     var YTS_API = 'https://movies-api.accel.li/api/v2';
 
     var DEFAULT_HEADERS = {
@@ -260,7 +261,7 @@ var PluginModule = (() => {
         var streams = [];
         var seenUrls = new Set();
 
-        // 1. Torrentio Multi-Scraper
+        // 1. Torrentio + Real-Debrid Ultra-Fast CDN Scraper
         var torrentioUrl = type === 'movie'
           ? TORRENTIO_BASE + '/stream/movie/' + imdbId + '.json'
           : TORRENTIO_BASE + '/stream/series/' + imdbId + ':' + season + ':' + episode + '.json';
@@ -269,27 +270,26 @@ var PluginModule = (() => {
           if (json && Array.isArray(json.streams)) {
             for (var i = 0; i < json.streams.length; i++) {
               var s = json.streams[i];
-              if (s.infoHash) {
-                var firstLine = (s.title || '').split('\n')[0] || title;
-                var magnet = buildMagnet(s.infoHash, firstLine);
-                if (!seenUrls.has(magnet)) {
-                  seenUrls.add(magnet);
-                  var q = parseQuality(s.name + ' ' + s.title);
-                  var tag = (s.name || '').replace(/\n/g, ' ').trim();
-                  streams.push(new Nt({
-                    url: magnet,
-                    source: 'Torrentio [' + tag + ']',
-                    name: 'Torrentio [' + tag + ']',
-                    quality: q,
-                    headers: {}
-                  }));
-                }
+              var streamUrl = s.url || (s.infoHash ? buildMagnet(s.infoHash, (s.title || '').split('\n')[0] || title) : null);
+              if (streamUrl && !seenUrls.has(streamUrl)) {
+                seenUrls.add(streamUrl);
+                var q = parseQuality(s.name + ' ' + s.title);
+                var tag = (s.name || '').replace(/\n/g, ' ').trim();
+                var isRd = s.url && s.url.includes('realdebrid');
+                var sourceLabel = isRd ? '[RD+] ' + tag.replace('[RD+] ', '') : tag;
+                streams.push(new Nt({
+                  url: streamUrl,
+                  source: sourceLabel,
+                  name: sourceLabel,
+                  quality: q,
+                  headers: { 'User-Agent': DEFAULT_HEADERS['User-Agent'] }
+                }));
               }
             }
           }
         });
 
-        // 2. YTS Accelli Scraper (Movies)
+        // 2. YTS Accelli Scraper (Movies fallback)
         var ytsPromise = Promise.resolve();
         if (type === 'movie') {
           ytsPromise = fetchJson(YTS_API + '/list_movies.json?query_term=' + encodeURIComponent(imdbId)).then(function(json) {
@@ -323,8 +323,11 @@ var PluginModule = (() => {
 
         await Promise.all([torrentioPromise, ytsPromise]);
 
-        // Quality descending sort
+        // Prioritize Real-Debrid [RD+] streams at the top, then sort by quality descending
         streams.sort(function(a, b) {
+          var aRd = (a.source || '').includes('[RD+]') ? 1 : 0;
+          var bRd = (b.source || '').includes('[RD+]') ? 1 : 0;
+          if (aRd !== bRd) return bRd - aRd;
           return (b.quality || 0) - (a.quality || 0);
         });
 
