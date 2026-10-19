@@ -40,10 +40,23 @@ var PluginModule = (() => {
       'udp://tracker.tiny-vps.com:6969/announce'
     ];
 
-    function buildMagnet(infoHash, dn) {
+    function buildMagnet(infoHash, dn, extraSources) {
       var magnet = 'magnet:?xt=urn:btih:' + infoHash + '&dn=' + encodeURIComponent(dn || infoHash);
+      var added = new Set(TRACKERS);
       for (var i = 0; i < TRACKERS.length; i++) {
         magnet += '&tr=' + encodeURIComponent(TRACKERS[i]);
+      }
+      if (Array.isArray(extraSources)) {
+        for (var j = 0; j < extraSources.length; j++) {
+          var src = extraSources[j];
+          if (typeof src === 'string' && src.startsWith('tracker:')) {
+            var tr = src.slice(8);
+            if (!added.has(tr)) {
+              added.add(tr);
+              magnet += '&tr=' + encodeURIComponent(tr);
+            }
+          }
+        }
       }
       return magnet;
     }
@@ -273,7 +286,7 @@ var PluginModule = (() => {
               if (s.url && (s.url.includes('/resolve/realdebrid') || s.url.includes('/resolve/'))) {
                 continue; // Skip any residual debrid resolve links
               }
-              var streamUrl = (s.infoHash ? buildMagnet(s.infoHash, (s.title || '').split('\n')[0] || title) : s.url);
+              var streamUrl = (s.infoHash ? buildMagnet(s.infoHash, (s.title || '').split('\n')[0] || title, s.sources) : s.url);
               if (streamUrl && !seenUrls.has(streamUrl)) {
                 seenUrls.add(streamUrl);
                 var q = parseQuality(s.name + ' ' + s.title);
@@ -302,7 +315,7 @@ var PluginModule = (() => {
               if (s.url && (s.url.includes('/resolve/realdebrid') || s.url.includes('/resolve/'))) {
                 continue;
               }
-              var streamUrl = (s.infoHash ? buildMagnet(s.infoHash, (s.title || '').split('\n')[0] || title) : s.url);
+              var streamUrl = (s.infoHash ? buildMagnet(s.infoHash, (s.title || '').split('\n')[0] || title, s.sources) : s.url);
               if (streamUrl && !seenUrls.has(streamUrl)) {
                 seenUrls.add(streamUrl);
                 var q = parseQuality(s.name + ' ' + s.title);
