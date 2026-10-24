@@ -20,46 +20,11 @@ var PluginModule = (() => {
 
     var CINEMETA_CATALOG = 'https://cinemeta-catalogs.strem.io/top/catalog';
     var CINEMETA_V3 = 'https://v3-cinemeta.strem.io';
-    var TORRENTIO_BASE = 'https://torrentio.strem.fun';
-    var COMET_BASE = 'https://comet.elfhosted.com';
-    var YTS_API = 'https://movies-api.accel.li/api/v2';
 
     var DEFAULT_HEADERS = {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
       'Accept': 'application/json, text/plain, */*'
     };
-
-    var TRACKERS = [
-      'udp://tracker.opentrackr.org:1337/announce',
-      'udp://open.stealth.si:80/announce',
-      'udp://tracker.torrent.eu.org:451/announce',
-      'udp://explodie.org:6969/announce',
-      'udp://tracker.coppersurfer.tk:6969/announce',
-      'udp://open.demonii.com:1337/announce',
-      'udp://tracker.openbittorrent.com:80',
-      'udp://tracker.tiny-vps.com:6969/announce'
-    ];
-
-    function buildMagnet(infoHash, dn, extraSources) {
-      var magnet = 'magnet:?xt=urn:btih:' + infoHash + '&dn=' + encodeURIComponent(dn || infoHash);
-      var added = new Set(TRACKERS);
-      for (var i = 0; i < TRACKERS.length; i++) {
-        magnet += '&tr=' + encodeURIComponent(TRACKERS[i]);
-      }
-      if (Array.isArray(extraSources)) {
-        for (var j = 0; j < extraSources.length; j++) {
-          var src = extraSources[j];
-          if (typeof src === 'string' && src.startsWith('tracker:')) {
-            var tr = src.slice(8);
-            if (!added.has(tr)) {
-              added.add(tr);
-              magnet += '&tr=' + encodeURIComponent(tr);
-            }
-          }
-        }
-      }
-      return magnet;
-    }
 
     function parseQuality(str) {
       var s = String(str || '').toLowerCase();
@@ -80,6 +45,17 @@ var PluginModule = (() => {
         return JSON.parse(body);
       } catch (e) {
         return null;
+      }
+    }
+
+    async function fetchText(url, headers) {
+      try {
+        var h = headers || DEFAULT_HEADERS;
+        var res = await http_get(url, h);
+        if (!res) return '';
+        return typeof res === 'string' ? res : (res.body || '');
+      } catch (e) {
+        return '';
       }
     }
 
@@ -181,6 +157,7 @@ var PluginModule = (() => {
         }
 
         var m = json.meta;
+        var tmdbId = m.moviedb_id || undefined;
         var cast = [];
         if (Array.isArray(m.cast)) {
           for (var i = 0; i < Math.min(m.cast.length, 15); i++) {
@@ -196,7 +173,7 @@ var PluginModule = (() => {
             episode: 1,
             posterUrl: m.poster || '',
             description: m.description || '',
-            url: JSON.stringify({ imdbId: id, type: 'movie', title: m.name, year: m.releaseInfo || m.year })
+            url: JSON.stringify({ imdbId: id, tmdbId: tmdbId, type: 'movie', title: m.name, year: m.releaseInfo || m.year })
           }));
         } else {
           if (Array.isArray(m.videos) && m.videos.length > 0) {
@@ -211,6 +188,7 @@ var PluginModule = (() => {
                 airDate: v.released || '',
                 url: JSON.stringify({
                   imdbId: id,
+                  tmdbId: tmdbId,
                   type: 'series',
                   season: v.season || 1,
                   episode: v.episode || v.number || (k + 1),
@@ -225,7 +203,7 @@ var PluginModule = (() => {
               season: 1,
               episode: 1,
               posterUrl: m.poster || '',
-              url: JSON.stringify({ imdbId: id, type: 'series', season: 1, episode: 1, title: m.name })
+              url: JSON.stringify({ imdbId: id, tmdbId: tmdbId, type: 'series', season: 1, episode: 1, title: m.name })
             }));
           }
         }
@@ -270,103 +248,101 @@ var PluginModule = (() => {
         var season = parsed.season || 1;
         var episode = parsed.episode || 1;
         var title = parsed.title || imdbId;
+        var tmdbId = parsed.tmdbId;
+
+        // Resolve TMDB ID if not present in payload
+        if (!tmdbId && imdbId) {
+          var meta = await fetchJson(CINEMETA_V3 + '/meta/' + type + '/' + imdbId + '.json');
+          if (meta && meta.meta && meta.meta.moviedb_id) {
+            tmdbId = meta.meta.moviedb_id;
+          }
+        }
 
         var streams = [];
         var seenUrls = new Set();
 
-        // 1. Torrentio P2P Torrent Scraper (Direct P2P / TorrServer)
-        var torrentioUrl = type === 'movie'
-          ? TORRENTIO_BASE + '/stream/movie/' + imdbId + '.json'
-          : TORRENTIO_BASE + '/stream/series/' + imdbId + ':' + season + ':' + episode + '.json';
-
-        var torrentioPromise = fetchJson(torrentioUrl).then(function(json) {
-          if (json && Array.isArray(json.streams)) {
-            for (var i = 0; i < json.streams.length; i++) {
-              var s = json.streams[i];
-              if (s.url && (s.url.includes('/resolve/realdebrid') || s.url.includes('/resolve/'))) {
-                continue; // Skip any residual debrid resolve links
-              }
-              var streamUrl = (s.infoHash ? buildMagnet(s.infoHash, (s.title || '').split('\n')[0] || title, s.sources) : s.url);
-              if (streamUrl && !seenUrls.has(streamUrl)) {
-                seenUrls.add(streamUrl);
-                var q = parseQuality(s.name + ' ' + s.title);
-                var tag = (s.name || '').replace(/\n/g, ' ').trim();
-                streams.push(new Nt({
-                  url: streamUrl,
-                  source: tag || 'Torrentio',
-                  name: tag || 'Torrentio',
-                  quality: q,
-                  headers: { 'User-Agent': DEFAULT_HEADERS['User-Agent'] }
-                }));
-              }
-            }
-          }
-        }).catch(function() {});
-
-        // 2. Comet Torrent Scraper
-        var cometUrl = type === 'movie'
-          ? COMET_BASE + '/stream/movie/' + imdbId + '.json'
-          : COMET_BASE + '/stream/series/' + imdbId + ':' + season + ':' + episode + '.json';
-
-        var cometPromise = fetchJson(cometUrl).then(function(json) {
-          if (json && Array.isArray(json.streams)) {
-            for (var i = 0; i < json.streams.length; i++) {
-              var s = json.streams[i];
-              if (s.url && (s.url.includes('/resolve/realdebrid') || s.url.includes('/resolve/'))) {
-                continue;
-              }
-              var streamUrl = (s.infoHash ? buildMagnet(s.infoHash, (s.title || '').split('\n')[0] || title, s.sources) : s.url);
-              if (streamUrl && !seenUrls.has(streamUrl)) {
-                seenUrls.add(streamUrl);
-                var q = parseQuality(s.name + ' ' + s.title);
-                var tag = 'Comet ' + (s.name || '').replace(/\n/g, ' ').trim();
-                streams.push(new Nt({
-                  url: streamUrl,
-                  source: tag,
-                  name: tag,
-                  quality: q,
-                  headers: { 'User-Agent': DEFAULT_HEADERS['User-Agent'] }
-                }));
-              }
-            }
-          }
-        }).catch(function() {});
-
-        // 3. YTS Accelli Scraper (Movies fallback)
-        var ytsPromise = Promise.resolve();
-        if (type === 'movie') {
-          ytsPromise = fetchJson(YTS_API + '/list_movies.json?query_term=' + encodeURIComponent(imdbId)).then(function(json) {
-            if (json && json.data && Array.isArray(json.data.movies)) {
-              var movie = json.data.movies[0];
-              if (movie && Array.isArray(movie.torrents)) {
-                for (var j = 0; j < movie.torrents.length; j++) {
-                  var tor = movie.torrents[j];
-                  if (tor.hash) {
-                    var qStr = tor.quality || '1080p';
-                    var dn = (movie.title || title) + ' (' + (movie.year || '') + ') [' + qStr + '] [YTS]';
-                    var magnet = buildMagnet(tor.hash, dn);
-                    if (!seenUrls.has(magnet)) {
-                      seenUrls.add(magnet);
-                      var qVal = parseQuality(qStr);
-                      var sizeStr = tor.size ? ' (' + tor.size + ')' : '';
-                      streams.push(new Nt({
-                        url: magnet,
-                        source: 'YTS [' + qStr.toUpperCase() + ']' + sizeStr,
-                        name: 'YTS [' + qStr.toUpperCase() + ']',
-                        quality: qVal,
-                        headers: {}
-                      }));
+        // 1. VidApi / VAPlayer Direct High-Speed HLS Streams
+        var vidapiPromise = (async function() {
+          if (!tmdbId) return;
+          try {
+            var tvQuery = type === 'movie' ? '' : '&season=' + season + '&episode=' + episode;
+            var apiUrl = 'https://streamdata.vaplayer.ru/api.php?tmdb=' + tmdbId + '&type=' + (type === 'movie' ? 'movie' : 'tv') + tvQuery;
+            var json = await fetchJson(apiUrl, {
+              'User-Agent': DEFAULT_HEADERS['User-Agent'],
+              'Referer': 'https://brightpathsignals.com/',
+              'Origin': 'https://brightpathsignals.com'
+            });
+            if (json && json.status_code === '200' && json.data && Array.isArray(json.data.stream_urls)) {
+              for (var i = 0; i < json.data.stream_urls.length; i++) {
+                var streamUrl = json.data.stream_urls[i];
+                if (streamUrl && !seenUrls.has(streamUrl)) {
+                  seenUrls.add(streamUrl);
+                  var isHLS = !streamUrl.includes('.mp4') && !streamUrl.includes('.mkv');
+                  streams.push(new Nt({
+                    url: streamUrl,
+                    source: 'VidApi Server ' + (i + 1) + ' (HLS)',
+                    name: '⚡ VidApi Server ' + (i + 1) + ' [1080p]',
+                    quality: 1080,
+                    type: isHLS ? 'hls' : 'mp4',
+                    isM3U8: isHLS,
+                    headers: {
+                      'User-Agent': DEFAULT_HEADERS['User-Agent'],
+                      'Referer': 'https://brightpathsignals.com/',
+                      'Origin': 'https://brightpathsignals.com'
                     }
-                  }
+                  }));
                 }
               }
             }
-          }).catch(function() {});
-        }
+          } catch (e) {}
+        })();
 
-        await Promise.all([torrentioPromise, cometPromise, ytsPromise]);
+        // 2. VixSrc Direct Multi-Audio HLS Master Streams
+        var vixsrcPromise = (async function() {
+          if (!tmdbId) return;
+          try {
+            var tvPath = type === 'movie' ? '/api/movie/' + tmdbId : '/api/tv/' + tmdbId + '/' + season + '/' + episode;
+            var json = await fetchJson('https://vixsrc.to' + tvPath, {
+              'User-Agent': DEFAULT_HEADERS['User-Agent'],
+              'Referer': 'https://vixsrc.to',
+              'Origin': 'https://vixsrc.to'
+            });
+            if (json && json.src) {
+              var embedHtml = await fetchText('https://vixsrc.to' + json.src, {
+                'User-Agent': DEFAULT_HEADERS['User-Agent'],
+                'Referer': 'https://vixsrc.to'
+              });
+              var tokenMatch = embedHtml.match(/token["']\s*:\s*["']([^"']+)/);
+              var expiresMatch = embedHtml.match(/expires["']\s*:\s*["']([^"']+)/);
+              var playlistMatch = embedHtml.match(/url\s*:\s*["']([^"']+)/);
+              if (playlistMatch && tokenMatch && expiresMatch) {
+                var playlistUrl = playlistMatch[1];
+                var sep = playlistUrl.includes('?') ? '&' : '?';
+                var masterUrl = playlistUrl + sep + 'token=' + tokenMatch[1] + '&expires=' + expiresMatch[1] + '&h=1';
+                if (!seenUrls.has(masterUrl)) {
+                  seenUrls.add(masterUrl);
+                  streams.push(new Nt({
+                    url: masterUrl,
+                    source: 'VixSrc Multi-Audio (HLS)',
+                    name: '⚡ VixSrc [1080p Multi-Audio]',
+                    quality: 1080,
+                    type: 'hls',
+                    isM3U8: true,
+                    headers: {
+                      'User-Agent': DEFAULT_HEADERS['User-Agent'],
+                      'Referer': 'https://vixsrc.to' + json.src,
+                      'Origin': 'https://vixsrc.to'
+                    }
+                  }));
+                }
+              }
+            }
+          } catch (e) {}
+        })();
 
-        // Sort by quality descending
+        await Promise.all([vidapiPromise, vixsrcPromise]);
+
+        // Quality descending sort
         streams.sort(function(a, b) {
           return (b.quality || 0) - (a.quality || 0);
         });
