@@ -1,7 +1,6 @@
 {
-  "name": "YoTurkish Repo",
-  "packageName": "dev.justin.yoturkish",
-  "description": "YoTurkish Turkish Series with English Subtitles",
+  "name": "Justin's Extensions Repo",
+  "description": "Justin's Catalogue (Direct HLS 1080p), YoTurkish, and WLEXT",
   "manifestVersion": 1,
   "pluginLists": [
     "https://raw.githubusercontent.com/justinx2022/sstream_plugintest/main/dist/plugins.json"
