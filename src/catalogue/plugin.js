@@ -286,9 +286,7 @@ var PluginModule = (() => {
                     type: isHLS ? 'hls' : 'mp4',
                     isM3U8: isHLS,
                     headers: {
-                      'User-Agent': DEFAULT_HEADERS['User-Agent'],
-                      'Referer': 'https://brightpathsignals.com/',
-                      'Origin': 'https://brightpathsignals.com'
+                      'User-Agent': DEFAULT_HEADERS['User-Agent']
                     }
                   }));
                 }
