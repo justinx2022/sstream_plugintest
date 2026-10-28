@@ -264,7 +264,7 @@ var PluginModule = (() => {
         var streams = [];
         var seenUrls = new Set();
 
-        // 1. VidApi / VAPlayer Direct Multi-CDN HLS Streams (with TMDb & IMDb dual-probing)
+        // 1. VidApi / VAPlayer Direct Multi-CDN HLS Streams (High-Speed .m3u8)
         var vidapiPromise = (async function() {
           try {
             var resolvedTmdb = tmdbId || await cinemetaPromise;
@@ -286,7 +286,7 @@ var PluginModule = (() => {
                 if (json.data && Array.isArray(json.data.stream_urls) && json.data.stream_urls.length > 0) {
                   for (var i = 0; i < json.data.stream_urls.length; i++) {
                     var streamUrl = json.data.stream_urls[i];
-                    if (streamUrl && !seenUrls.has(streamUrl)) {
+                    if (streamUrl && !seenUrls.has(streamUrl) && (streamUrl.includes('.m3u8') || streamUrl.includes('.mp4'))) {
                       seenUrls.add(streamUrl);
                       var isHLS = !streamUrl.includes('.mp4') && !streamUrl.includes('.mkv');
                       streams.push(new Nt({
@@ -302,200 +302,66 @@ var PluginModule = (() => {
                       }));
                     }
                   }
-                  break; // Got streams, no need to query secondary ID
+                  break; // Successful resolution, stop fallback loop
                 }
               }
             }
           } catch (e) {}
         })();
 
-        // 2. VixSrc Direct Multi-Audio HLS Master Streams
+        // 2. VixSrc Direct Multi-Audio HLS Master Streams (High-Speed .m3u8)
         var vixsrcPromise = (async function() {
           try {
             var resolvedTmdb = tmdbId || await cinemetaPromise;
-            var idToUse = resolvedTmdb || imdbId;
-            if (!idToUse) return;
-            var tvPath = type === 'movie' ? ('/api/movie/' + idToUse) : ('/api/tv/' + idToUse + '/' + season + '/' + episode);
-            var json = await fetchJson('https://vixsrc.to' + tvPath, {
-              'User-Agent': DEFAULT_HEADERS['User-Agent'],
-              'Referer': 'https://vixsrc.to',
-              'Origin': 'https://vixsrc.to'
-            });
-            if (json && json.src) {
-              var embedHtml = await fetchText('https://vixsrc.to' + json.src, {
+            var idsToTry = [];
+            if (resolvedTmdb) idsToTry.push(resolvedTmdb);
+            if (imdbId && imdbId !== resolvedTmdb) idsToTry.push(imdbId);
+            if (idsToTry.length === 0) return;
+
+            for (var m = 0; m < idsToTry.length; m++) {
+              var idToUse = idsToTry[m];
+              var tvPath = type === 'movie' ? ('/api/movie/' + idToUse) : ('/api/tv/' + idToUse + '/' + season + '/' + episode);
+              var json = await fetchJson('https://vixsrc.to' + tvPath, {
                 'User-Agent': DEFAULT_HEADERS['User-Agent'],
-                'Referer': 'https://vixsrc.to'
+                'Referer': 'https://vixsrc.to',
+                'Origin': 'https://vixsrc.to'
               });
-              var tokenMatch = embedHtml.match(/token["']\s*:\s*["']([^"']+)/);
-              var expiresMatch = embedHtml.match(/expires["']\s*:\s*["']([^"']+)/);
-              var playlistMatch = embedHtml.match(/url\s*:\s*["']([^"']+)/);
-              if (playlistMatch && tokenMatch && expiresMatch) {
-                var playlistUrl = playlistMatch[1];
-                var sep = playlistUrl.includes('?') ? '&' : '?';
-                var masterUrl = playlistUrl + sep + 'token=' + tokenMatch[1] + '&expires=' + expiresMatch[1] + '&h=1';
-                if (!seenUrls.has(masterUrl)) {
-                  seenUrls.add(masterUrl);
-                  streams.push(new Nt({
-                    url: masterUrl,
-                    source: 'VixSrc Multi-Audio (HLS)',
-                    name: '⚡ VixSrc Multi-Audio [1080p HLS]',
-                    quality: 1080,
-                    type: 'hls',
-                    isM3U8: true,
-                    headers: {
-                      'User-Agent': DEFAULT_HEADERS['User-Agent'],
-                      'Referer': 'https://vixsrc.to' + json.src,
-                      'Origin': 'https://vixsrc.to'
-                    }
-                  }));
+              if (json && json.src) {
+                var embedHtml = await fetchText('https://vixsrc.to' + json.src, {
+                  'User-Agent': DEFAULT_HEADERS['User-Agent'],
+                  'Referer': 'https://vixsrc.to'
+                });
+                var tokenMatch = embedHtml.match(/token["']\s*:\s*["']([^"']+)/);
+                var expiresMatch = embedHtml.match(/expires["']\s*:\s*["']([^"']+)/);
+                var playlistMatch = embedHtml.match(/url\s*:\s*["']([^"']+)/);
+                if (playlistMatch && tokenMatch && expiresMatch) {
+                  var playlistUrl = playlistMatch[1];
+                  var sep = playlistUrl.includes('?') ? '&' : '?';
+                  var masterUrl = playlistUrl + sep + 'token=' + tokenMatch[1] + '&expires=' + expiresMatch[1] + '&h=1';
+                  if (!seenUrls.has(masterUrl)) {
+                    seenUrls.add(masterUrl);
+                    streams.push(new Nt({
+                      url: masterUrl,
+                      source: 'VixSrc Multi-Audio (HLS)',
+                      name: '⚡ VixSrc Multi-Audio [1080p HLS]',
+                      quality: 1080,
+                      type: 'hls',
+                      isM3U8: true,
+                      headers: {
+                        'User-Agent': DEFAULT_HEADERS['User-Agent'],
+                        'Referer': 'https://vixsrc.to' + json.src,
+                        'Origin': 'https://vixsrc.to'
+                      }
+                    }));
+                  }
+                  break; // Found master playlist
                 }
               }
             }
           } catch (e) {}
         })();
 
-        // 3. VidSrc Fast Mirror (pm)
-        var vidsrcFastPromise = (async function() {
-          try {
-            var resolvedTmdb = tmdbId || await cinemetaPromise;
-            var idToUse = resolvedTmdb || imdbId;
-            if (!idToUse) return;
-            var embedPath = type === 'movie' ? ('/embed/movie/' + idToUse) : ('/embed/tv/' + idToUse + '/' + season + '/' + episode);
-            var embedUrl = 'https://vidsrc.pm' + embedPath;
-            if (!seenUrls.has(embedUrl)) {
-              seenUrls.add(embedUrl);
-              streams.push(new Nt({
-                url: embedUrl,
-                source: 'VidSrc Fast Mirror',
-                name: '⚡ VidSrc Fast Mirror [1080p Stream]',
-                quality: 1080,
-                type: 'embed',
-                isM3U8: false,
-                headers: {
-                  'User-Agent': DEFAULT_HEADERS['User-Agent'],
-                  'Referer': 'https://vidsrc.pm/'
-                }
-              }));
-            }
-          } catch (e) {}
-        })();
-
-        // 4. VidSrc IO Mirror (io)
-        var vidsrcIoPromise = (async function() {
-          try {
-            var resolvedTmdb = tmdbId || await cinemetaPromise;
-            var idToUse = resolvedTmdb || imdbId;
-            if (!idToUse) return;
-            var embedPath = type === 'movie' ? ('/embed/movie/' + idToUse) : ('/embed/tv/' + idToUse + '/' + season + '/' + episode);
-            var embedUrl = 'https://vidsrc.io' + embedPath;
-            if (!seenUrls.has(embedUrl)) {
-              seenUrls.add(embedUrl);
-              streams.push(new Nt({
-                url: embedUrl,
-                source: 'VidSrc IO Mirror',
-                name: '⚡ VidSrc IO [1080p Stream]',
-                quality: 1080,
-                type: 'embed',
-                isM3U8: false,
-                headers: {
-                  'User-Agent': DEFAULT_HEADERS['User-Agent'],
-                  'Referer': 'https://vidsrc.io/'
-                }
-              }));
-            }
-          } catch (e) {}
-        })();
-
-        // 5. 2Embed Multi-Host Backup Mirror
-        var twoEmbedPromise = (async function() {
-          try {
-            var resolvedTmdb = tmdbId || await cinemetaPromise;
-            var idToUse = resolvedTmdb || imdbId;
-            if (!idToUse) return;
-            var twoEmbedUrl = type === 'movie' 
-              ? ('https://www.2embed.cc/embed/' + idToUse) 
-              : ('https://www.2embed.cc/embedtv/' + idToUse + '&s=' + season + '&e=' + episode);
-            if (!seenUrls.has(twoEmbedUrl)) {
-              seenUrls.add(twoEmbedUrl);
-              streams.push(new Nt({
-                url: twoEmbedUrl,
-                source: '2Embed Mirror',
-                name: '⚡ 2Embed Mirror [1080p Stream]',
-                quality: 1080,
-                type: 'embed',
-                isM3U8: false,
-                headers: {
-                  'User-Agent': DEFAULT_HEADERS['User-Agent'],
-                  'Referer': 'https://www.2embed.cc/'
-                }
-              }));
-            }
-          } catch (e) {}
-        })();
-
-        // 6. MultiEmbed Universal Embed Stream
-        var multiEmbedPromise = (async function() {
-          try {
-            var resolvedTmdb = tmdbId || await cinemetaPromise;
-            var idToUse = resolvedTmdb || imdbId;
-            if (!idToUse) return;
-            var multiUrl = type === 'movie'
-              ? ('https://multiembed.mov/?video_id=' + idToUse + (resolvedTmdb ? '&tmdb=1' : ''))
-              : ('https://multiembed.mov/?video_id=' + idToUse + '&s=' + season + '&e=' + episode);
-            if (!seenUrls.has(multiUrl)) {
-              seenUrls.add(multiUrl);
-              streams.push(new Nt({
-                url: multiUrl,
-                source: 'MultiEmbed Universal',
-                name: '⚡ MultiEmbed [1080p Universal]',
-                quality: 1080,
-                type: 'embed',
-                isM3U8: false,
-                headers: {
-                  'User-Agent': DEFAULT_HEADERS['User-Agent'],
-                  'Referer': 'https://multiembed.mov/'
-                }
-              }));
-            }
-          } catch (e) {}
-        })();
-
-        // 7. Videasy Player Stream
-        var videasyPromise = (async function() {
-          try {
-            var resolvedTmdb = tmdbId || await cinemetaPromise;
-            var idToUse = resolvedTmdb || imdbId;
-            if (!idToUse) return;
-            var videasyUrl = type === 'movie'
-              ? ('https://player.videasy.to/movie/' + idToUse)
-              : ('https://player.videasy.to/tv/' + idToUse + '/' + season + '/' + episode);
-            if (!seenUrls.has(videasyUrl)) {
-              seenUrls.add(videasyUrl);
-              streams.push(new Nt({
-                url: videasyUrl,
-                source: 'Videasy Player',
-                name: '⚡ Videasy [1080p Stream]',
-                quality: 1080,
-                type: 'embed',
-                isM3U8: false,
-                headers: {
-                  'User-Agent': DEFAULT_HEADERS['User-Agent'],
-                  'Referer': 'https://player.videasy.to/'
-                }
-              }));
-            }
-          } catch (e) {}
-        })();
-
-        await Promise.all([
-          vidapiPromise,
-          vixsrcPromise,
-          vidsrcFastPromise,
-          vidsrcIoPromise,
-          twoEmbedPromise,
-          multiEmbedPromise,
-          videasyPromise
-        ]);
+        await Promise.all([vidapiPromise, vixsrcPromise]);
 
         // Quality descending sort
         streams.sort(function(a, b) {
