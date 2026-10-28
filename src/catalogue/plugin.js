@@ -264,37 +264,45 @@ var PluginModule = (() => {
         var streams = [];
         var seenUrls = new Set();
 
-        // 1. VidApi / VAPlayer Direct Multi-CDN HLS Streams (TMDb / IMDb direct)
+        // 1. VidApi / VAPlayer Direct Multi-CDN HLS Streams (with TMDb & IMDb dual-probing)
         var vidapiPromise = (async function() {
           try {
             var resolvedTmdb = tmdbId || await cinemetaPromise;
-            var idToUse = resolvedTmdb || imdbId;
-            if (!idToUse) return;
-            var idParam = (resolvedTmdb || typeof idToUse === 'number' || !String(idToUse).startsWith('tt')) ? ('tmdb=' + idToUse) : ('imdb=' + idToUse);
+            var idsToTry = [];
+            if (resolvedTmdb) idsToTry.push('tmdb=' + resolvedTmdb);
+            if (imdbId) idsToTry.push('imdb=' + imdbId);
+            if (idsToTry.length === 0) return;
+
             var tvQuery = type === 'movie' ? '' : ('&season=' + season + '&episode=' + episode);
-            var apiUrl = 'https://streamdata.vaplayer.ru/api.php?' + idParam + '&type=' + (type === 'movie' ? 'movie' : 'tv') + tvQuery;
-            var json = await fetchJson(apiUrl, {
-              'User-Agent': DEFAULT_HEADERS['User-Agent'],
-              'Referer': 'https://brightpathsignals.com/',
-              'Origin': 'https://brightpathsignals.com'
-            });
-            if (json && json.status_code === '200' && json.data && Array.isArray(json.data.stream_urls)) {
-              for (var i = 0; i < json.data.stream_urls.length; i++) {
-                var streamUrl = json.data.stream_urls[i];
-                if (streamUrl && !seenUrls.has(streamUrl)) {
-                  seenUrls.add(streamUrl);
-                  var isHLS = !streamUrl.includes('.mp4') && !streamUrl.includes('.mkv');
-                  streams.push(new Nt({
-                    url: streamUrl,
-                    source: 'VidApi Server ' + (i + 1) + ' (HLS)',
-                    name: '⚡ VidApi Server ' + (i + 1) + ' [1080p HLS]',
-                    quality: 1080,
-                    type: isHLS ? 'hls' : 'mp4',
-                    isM3U8: isHLS,
-                    headers: {
-                      'User-Agent': DEFAULT_HEADERS['User-Agent']
+            
+            for (var k = 0; k < idsToTry.length; k++) {
+              var apiUrl = 'https://streamdata.vaplayer.ru/api.php?' + idsToTry[k] + '&type=' + (type === 'movie' ? 'movie' : 'tv') + tvQuery;
+              var json = await fetchJson(apiUrl, {
+                'User-Agent': DEFAULT_HEADERS['User-Agent'],
+                'Referer': 'https://brightpathsignals.com/',
+                'Origin': 'https://brightpathsignals.com'
+              });
+              if (json && (json.status_code == 200 || json.status_code === '200' || (json.data && Array.isArray(json.data.stream_urls)))) {
+                if (json.data && Array.isArray(json.data.stream_urls) && json.data.stream_urls.length > 0) {
+                  for (var i = 0; i < json.data.stream_urls.length; i++) {
+                    var streamUrl = json.data.stream_urls[i];
+                    if (streamUrl && !seenUrls.has(streamUrl)) {
+                      seenUrls.add(streamUrl);
+                      var isHLS = !streamUrl.includes('.mp4') && !streamUrl.includes('.mkv');
+                      streams.push(new Nt({
+                        url: streamUrl,
+                        source: 'VidApi Server ' + (i + 1) + ' (HLS)',
+                        name: '⚡ VidApi Server ' + (i + 1) + ' [1080p HLS]',
+                        quality: 1080,
+                        type: isHLS ? 'hls' : 'mp4',
+                        isM3U8: isHLS,
+                        headers: {
+                          'User-Agent': DEFAULT_HEADERS['User-Agent']
+                        }
+                      }));
                     }
-                  }));
+                  }
+                  break; // Got streams, no need to query secondary ID
                 }
               }
             }
@@ -346,8 +354,8 @@ var PluginModule = (() => {
           } catch (e) {}
         })();
 
-        // 3. VidSrc Fast Mirror Embed Stream
-        var vidsrcEmbedPromise = (async function() {
+        // 3. VidSrc Fast Mirror (pm)
+        var vidsrcFastPromise = (async function() {
           try {
             var resolvedTmdb = tmdbId || await cinemetaPromise;
             var idToUse = resolvedTmdb || imdbId;
@@ -359,7 +367,7 @@ var PluginModule = (() => {
               streams.push(new Nt({
                 url: embedUrl,
                 source: 'VidSrc Fast Mirror',
-                name: '⚡ VidSrc Mirror [1080p Stream]',
+                name: '⚡ VidSrc Fast Mirror [1080p Stream]',
                 quality: 1080,
                 type: 'embed',
                 isM3U8: false,
@@ -372,7 +380,33 @@ var PluginModule = (() => {
           } catch (e) {}
         })();
 
-        // 4. 2Embed Multi-Host Backup Mirror
+        // 4. VidSrc IO Mirror (io)
+        var vidsrcIoPromise = (async function() {
+          try {
+            var resolvedTmdb = tmdbId || await cinemetaPromise;
+            var idToUse = resolvedTmdb || imdbId;
+            if (!idToUse) return;
+            var embedPath = type === 'movie' ? ('/embed/movie/' + idToUse) : ('/embed/tv/' + idToUse + '/' + season + '/' + episode);
+            var embedUrl = 'https://vidsrc.io' + embedPath;
+            if (!seenUrls.has(embedUrl)) {
+              seenUrls.add(embedUrl);
+              streams.push(new Nt({
+                url: embedUrl,
+                source: 'VidSrc IO Mirror',
+                name: '⚡ VidSrc IO [1080p Stream]',
+                quality: 1080,
+                type: 'embed',
+                isM3U8: false,
+                headers: {
+                  'User-Agent': DEFAULT_HEADERS['User-Agent'],
+                  'Referer': 'https://vidsrc.io/'
+                }
+              }));
+            }
+          } catch (e) {}
+        })();
+
+        // 5. 2Embed Multi-Host Backup Mirror
         var twoEmbedPromise = (async function() {
           try {
             var resolvedTmdb = tmdbId || await cinemetaPromise;
@@ -399,7 +433,7 @@ var PluginModule = (() => {
           } catch (e) {}
         })();
 
-        // 5. MultiEmbed Universal Embed Stream
+        // 6. MultiEmbed Universal Embed Stream
         var multiEmbedPromise = (async function() {
           try {
             var resolvedTmdb = tmdbId || await cinemetaPromise;
@@ -426,7 +460,42 @@ var PluginModule = (() => {
           } catch (e) {}
         })();
 
-        await Promise.all([vidapiPromise, vixsrcPromise, vidsrcEmbedPromise, twoEmbedPromise, multiEmbedPromise]);
+        // 7. Videasy Player Stream
+        var videasyPromise = (async function() {
+          try {
+            var resolvedTmdb = tmdbId || await cinemetaPromise;
+            var idToUse = resolvedTmdb || imdbId;
+            if (!idToUse) return;
+            var videasyUrl = type === 'movie'
+              ? ('https://player.videasy.to/movie/' + idToUse)
+              : ('https://player.videasy.to/tv/' + idToUse + '/' + season + '/' + episode);
+            if (!seenUrls.has(videasyUrl)) {
+              seenUrls.add(videasyUrl);
+              streams.push(new Nt({
+                url: videasyUrl,
+                source: 'Videasy Player',
+                name: '⚡ Videasy [1080p Stream]',
+                quality: 1080,
+                type: 'embed',
+                isM3U8: false,
+                headers: {
+                  'User-Agent': DEFAULT_HEADERS['User-Agent'],
+                  'Referer': 'https://player.videasy.to/'
+                }
+              }));
+            }
+          } catch (e) {}
+        })();
+
+        await Promise.all([
+          vidapiPromise,
+          vixsrcPromise,
+          vidsrcFastPromise,
+          vidsrcIoPromise,
+          twoEmbedPromise,
+          multiEmbedPromise,
+          videasyPromise
+        ]);
 
         // Quality descending sort
         streams.sort(function(a, b) {
