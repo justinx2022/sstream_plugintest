@@ -1,9 +1,9 @@
 {
   "packageName": "dev.justin.catalogue",
   "name": "JUSTIN'S CATALOGUE",
-  "version": 4,
+  "version": 5,
   "baseUrl": "https://v3-cinemeta.strem.io",
-  "description": "Justin's Universal Hollywood & Western Movies and TV Series Catalog (Direct HLS 1080p Fast Streaming)",
+  "description": "Justin's Universal Hollywood & Western Movies and TV Series Catalog (Multi-Source Direct HLS & Fast Embed Streams)",
   "authors": [
     "Justin"
   ],
