@@ -238,6 +238,163 @@ var PluginModule = (() => {
       ]);
     }
 
+    var cachedMdBase = null;
+    async function getMoviesDriveBase() {
+      if (cachedMdBase) return cachedMdBase;
+      try {
+        var data = await fetchJson('https://raw.githubusercontent.com/SaurabhKaperwan/Utils/refs/heads/main/urls.json');
+        if (data && data.moviesdrive) {
+          cachedMdBase = data.moviesdrive.replace(/\/+$/, '');
+          return cachedMdBase;
+        }
+      } catch (e) {}
+      cachedMdBase = 'https://new5.moviesdrive.beer';
+      return cachedMdBase;
+    }
+
+    function cleanTitle(title) {
+      return String(title || '')
+        .replace(/\s*\(\d{4}\).*$/, '')
+        .replace(/[^a-zA-Z0-9\s]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
+
+    function extractLinkParam(urlStr) {
+      var curr = String(urlStr || '');
+      for (var i = 0; i < 3; i++) {
+        var m = curr.match(/[?&]link=([^#&]+)/i);
+        if (!m) break;
+        var target = m[1];
+        if (!/^https?:\/\//i.test(target)) {
+          try { target = decodeURIComponent(target); } catch (e) { break; }
+        }
+        if (/^https?:\/\//i.test(target)) {
+          curr = target;
+        } else {
+          break;
+        }
+      }
+      return /^https?:\/\//i.test(curr) && curr !== urlStr ? curr : null;
+    }
+
+    async function resolveHubCloudDirect(gpdlUrl) {
+      try {
+        var res = await http_get(gpdlUrl, {
+          'User-Agent': DEFAULT_HEADERS['User-Agent'],
+          'Referer': 'https://gamerxyt.com/'
+        });
+        if (!res) return null;
+        var final = res.finalUrl || '';
+        var direct = extractLinkParam(final);
+        if (direct) return direct;
+
+        if (final.includes('workers.dev') || final.includes('hubcloud')) {
+          var res2 = await http_get(final, {
+            'User-Agent': DEFAULT_HEADERS['User-Agent']
+          });
+          if (res2) {
+            var direct2 = extractLinkParam(res2.finalUrl);
+            if (direct2) return direct2;
+            if (res2.finalUrl) return res2.finalUrl;
+          }
+        }
+        return final || null;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    async function extractHcsStreams(hubUrl, qualityHint) {
+      var results = [];
+      try {
+        var hubHeaders = {
+          'User-Agent': DEFAULT_HEADERS['User-Agent'],
+          'Cookie': 'xla=s4t'
+        };
+        var html1 = await fetchText(hubUrl, hubHeaders);
+        if (!html1) return results;
+
+        var targetHtml = html1;
+        var referer = hubUrl;
+
+        var dlMatch = html1.match(/id=["']download["'][^>]*href=["']([^"']+)["']/i);
+        if (dlMatch) {
+          var nextUrl = dlMatch[1].startsWith('http') ? dlMatch[1] : (new URL(dlMatch[1], hubUrl).href);
+          var html2 = await fetchText(nextUrl, Object.assign({}, hubHeaders, { Referer: hubUrl }));
+          if (html2) {
+            targetHtml = html2;
+            referer = nextUrl;
+          }
+        }
+
+        var pxlMatch = targetHtml.match(/var\s+pxl\w*\s*=\s*["']([^"']+)["']/i);
+        var pxlId = null;
+        if (pxlMatch) {
+          var idM = pxlMatch[1].match(/\/u\/([a-zA-Z0-9]+)/);
+          if (idM) pxlId = idM[1];
+        }
+
+        var linkMatches = [...targetHtml.matchAll(/<a[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)];
+        for (var i = 0; i < linkMatches.length; i++) {
+          var m = linkMatches[i];
+          var href = m[1];
+          var text = m[2].replace(/<[^>]+>/g, '').trim();
+          var lower = text.toLowerCase();
+          var isBtn = /btn/i.test(m[0]);
+
+          if (!pxlId && /pixeldrain|pixel\s*server/i.test(lower)) {
+            var pxlM = href.match(/\/u\/([a-zA-Z0-9]+)/);
+            if (pxlM) pxlId = pxlM[1];
+          }
+
+          if ((lower.includes('10gbps') || /gpdl\.hubcloud\./i.test(href)) && isBtn) {
+            var fullHref = href.startsWith('http') ? href : (new URL(href, referer).href);
+            var direct = await resolveHubCloudDirect(fullHref);
+            var resolvedUrl = direct || fullHref;
+            results.push({
+              url: resolvedUrl,
+              name: '🚀 HCS • HubCloud 10Gbps [' + (qualityHint || '1080p') + ']',
+              source: 'HubCloud 10Gbps',
+              quality: parseQuality(qualityHint || '1080p'),
+              type: 'mkv',
+              isM3U8: false,
+              isHcs: true,
+              headers: { 'User-Agent': DEFAULT_HEADERS['User-Agent'] }
+            });
+          } else if ((lower.includes('download file') || lower.includes('fsl server') || lower.includes('s3 server')) && isBtn) {
+            if (!href.startsWith('#') && !href.startsWith('javascript:')) {
+              var directHref = href.startsWith('http') ? href : (new URL(href, referer).href);
+              results.push({
+                url: directHref,
+                name: '⚡ HCS • HighSpeed Direct [' + (qualityHint || '1080p') + ']',
+                source: 'HubCloud Direct',
+                quality: parseQuality(qualityHint || '1080p'),
+                type: 'mkv',
+                isM3U8: false,
+                isHcs: true,
+                headers: { 'User-Agent': DEFAULT_HEADERS['User-Agent'] }
+              });
+            }
+          }
+        }
+
+        if (pxlId) {
+          results.unshift({
+            url: 'https://pixeldrain.com/api/file/' + pxlId + '?download',
+            name: '⚡ HCS • PixelDrain Direct [' + (qualityHint || '1080p') + ']',
+            source: 'PixelDrain Direct',
+            quality: parseQuality(qualityHint || '1080p'),
+            type: 'mkv',
+            isM3U8: false,
+            isHcs: true,
+            headers: { 'User-Agent': DEFAULT_HEADERS['User-Agent'] }
+          });
+        }
+      } catch (e) {}
+      return results;
+    }
+
     async function loadStreams(rawUrl, cb) {
       try {
         var parsed = null;
@@ -273,6 +430,128 @@ var PluginModule = (() => {
 
         var streams = [];
         var seenUrls = new Set();
+
+        // 0. High-Speed Cloud Sources (HCS) - HubCloud 10Gbps & PixelDrain Direct
+        var hcsPromise = (async function() {
+          try {
+            var rawTitle = parsed.title;
+            if (!rawTitle && imdbId) {
+              try {
+                var metaRes = await fetchJson(CINEMETA_V3 + '/meta/' + type + '/' + imdbId + '.json');
+                if (metaRes && metaRes.meta && metaRes.meta.name) rawTitle = metaRes.meta.name;
+              } catch (e) {}
+            }
+            if (!rawTitle) return;
+
+            var cleanQuery = cleanTitle(rawTitle);
+            if (!cleanQuery) return;
+
+            var mdBase = await getMoviesDriveBase();
+            var searchData = await fetchJson(mdBase + '/search.php?q=' + encodeURIComponent(cleanQuery) + '&page=1');
+            if (!searchData || !Array.isArray(searchData.hits) || searchData.hits.length === 0) return;
+
+            if (type === 'series') {
+              var sPad = season < 10 ? ('0' + season) : String(season);
+              var ePad = episode < 10 ? ('0' + episode) : String(episode);
+              var seriesHit = searchData.hits.find(function(h) {
+                var pt = (h.document && h.document.post_title) || '';
+                return /season|series/i.test(pt);
+              }) || searchData.hits[0];
+
+              if (!seriesHit || !seriesHit.document || !seriesHit.document.permalink) return;
+              var pageUrl = seriesHit.document.permalink.startsWith('http') ? seriesHit.document.permalink : (mdBase + seriesHit.document.permalink);
+              var pageHtml = await fetchText(pageUrl);
+
+              var recMatches = [...pageHtml.matchAll(/href=["'](https?:\/\/[^"']*\/search-recover\.php\?[^"']*)["']/gi)];
+              if (recMatches.length === 0) return;
+
+              var recUrl = recMatches[0][1].replace(/&amp;/g, '&');
+              var u = new URL(recUrl);
+              var from_ac = u.searchParams.get('from_ac');
+              if (!from_ac) return;
+
+              var seasonQuery = cleanQuery + ' S' + sPad;
+              var apiUrl = u.origin + u.pathname + '?api=search&page=1&from_ac=' + from_ac + '&q=' + encodeURIComponent(seasonQuery);
+              var searchRes = await fetchJson(apiUrl);
+              var hits = (searchRes && Array.isArray(searchRes.hits)) ? searchRes.hits : [];
+
+              if (hits.length === 0) {
+                var fallbackApiUrl = u.origin + u.pathname + '?api=search&page=1&from_ac=' + from_ac + '&q=' + encodeURIComponent(cleanQuery);
+                var fbRes = await fetchJson(fallbackApiUrl);
+                hits = (fbRes && Array.isArray(fbRes.hits)) ? fbRes.hits : [];
+              }
+
+              var targetHits = hits.filter(function(h) {
+                var fn = (h.file_name || '').toLowerCase();
+                return (fn.includes('s' + sPad + 'e' + ePad) ||
+                        fn.includes('s' + season + 'e' + episode) ||
+                        fn.includes('e' + ePad) ||
+                        fn.includes('episode ' + episode) ||
+                        fn.includes('ep ' + episode)) &&
+                        !fn.includes('.zip');
+              });
+
+              if (targetHits.length === 0) return;
+
+              targetHits.sort(function(a, b) {
+                return parseQuality(b.file_name) - parseQuality(a.file_name);
+              });
+
+              for (var th = 0; th < Math.min(2, targetHits.length); th++) {
+                var epHit = targetHits[th];
+                var qHint = parseQuality(epHit.file_name) + 'p';
+                var extracted = await extractHcsStreams(epHit.url, qHint);
+                for (var ex = 0; ex < extracted.length; ex++) {
+                  var st = extracted[ex];
+                  if (st && st.url && !seenUrls.has(st.url)) {
+                    seenUrls.add(st.url);
+                    streams.push(new Nt(st));
+                  }
+                }
+              }
+            } else {
+              var movieHit = searchData.hits.find(function(h) {
+                var pt = (h.document && h.document.post_title) || '';
+                return !/season|series/i.test(pt);
+              }) || searchData.hits[0];
+
+              if (!movieHit || !movieHit.document || !movieHit.document.permalink) return;
+              var pageUrl = movieHit.document.permalink.startsWith('http') ? movieHit.document.permalink : (mdBase + movieHit.document.permalink);
+              var pageHtml = await fetchText(pageUrl);
+
+              var hubUrls = [];
+              var archiveMatches = [...pageHtml.matchAll(/href=["'](https?:\/\/[^"']*\/archive\/\d+\/?)["']/gi)];
+
+              for (var a = 0; a < Math.min(3, archiveMatches.length); a++) {
+                var arcUrl = archiveMatches[a][1];
+                var arcHtml = await fetchText(arcUrl);
+                var hubM = arcHtml.match(/href=["'](https?:\/\/[^"']*hubcloud[^"']*)["']/i);
+                if (hubM) {
+                  hubUrls.push({ url: hubM[1], quality: '1080p' });
+                }
+              }
+
+              if (hubUrls.length === 0) {
+                var directHub = [...pageHtml.matchAll(/href=["'](https?:\/\/[^"']*hubcloud[^"']*)["']/gi)];
+                for (var d = 0; d < Math.min(2, directHub.length); d++) {
+                  hubUrls.push({ url: directHub[d][1], quality: '1080p' });
+                }
+              }
+
+              for (var hu = 0; hu < hubUrls.length; hu++) {
+                var item = hubUrls[hu];
+                var extracted = await extractHcsStreams(item.url, item.quality);
+                for (var ex = 0; ex < extracted.length; ex++) {
+                  var st = extracted[ex];
+                  if (st && st.url && !seenUrls.has(st.url)) {
+                    seenUrls.add(st.url);
+                    streams.push(new Nt(st));
+                  }
+                }
+              }
+            }
+          } catch (e) {}
+        })();
 
         // 1. VidApi / VAPlayer Multi-CDN HLS Streams (High-Speed .m3u8)
         var vidapiPromise = (async function() {
@@ -400,12 +679,16 @@ var PluginModule = (() => {
 
         // Execute all extractors in parallel with timeout protection
         await Promise.all([
+          withTimeout(hcsPromise, 10000),
           withTimeout(vidapiPromise, 8000),
           withTimeout(vixsrcPromise, 8000)
         ]);
 
-        // Quality descending sort
+        // Priority sort: HCS / direct cloud streams first, then quality descending
         streams.sort(function(a, b) {
+          var aHcs = (a.isHcs || a.type === 'mkv' || a.type === 'mp4' || !a.isM3U8) ? 1 : 0;
+          var bHcs = (b.isHcs || b.type === 'mkv' || b.type === 'mp4' || !b.isM3U8) ? 1 : 0;
+          if (aHcs !== bHcs) return bHcs - aHcs;
           return (b.quality || 0) - (a.quality || 0);
         });
 
