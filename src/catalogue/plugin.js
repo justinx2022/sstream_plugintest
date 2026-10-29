@@ -228,6 +228,16 @@ var PluginModule = (() => {
       }
     }
 
+    function withTimeout(promise, ms, fallback) {
+      var fb = fallback !== undefined ? fallback : null;
+      return Promise.race([
+        promise,
+        new Promise(function(resolve) {
+          setTimeout(function() { resolve(fb); }, ms);
+        })
+      ]);
+    }
+
     async function loadStreams(rawUrl, cb) {
       try {
         var parsed = null;
@@ -264,7 +274,7 @@ var PluginModule = (() => {
         var streams = [];
         var seenUrls = new Set();
 
-        // 1. VidApi / VAPlayer Direct Multi-CDN HLS Streams (High-Speed .m3u8)
+        // 1. VidApi / VAPlayer Multi-CDN HLS Streams (High-Speed .m3u8)
         var vidapiPromise = (async function() {
           try {
             var resolvedTmdb = tmdbId || await cinemetaPromise;
@@ -274,42 +284,55 @@ var PluginModule = (() => {
             if (idsToTry.length === 0) return;
 
             var tvQuery = type === 'movie' ? '' : ('&season=' + season + '&episode=' + episode);
-            
-            for (var k = 0; k < idsToTry.length; k++) {
-              var apiUrl = 'https://streamdata.vaplayer.ru/api.php?' + idsToTry[k] + '&type=' + (type === 'movie' ? 'movie' : 'tv') + tvQuery;
-              var json = await fetchJson(apiUrl, {
-                'User-Agent': DEFAULT_HEADERS['User-Agent'],
-                'Referer': 'https://brightpathsignals.com/',
-                'Origin': 'https://brightpathsignals.com'
-              });
-              if (json && (json.status_code == 200 || json.status_code === '200' || (json.data && Array.isArray(json.data.stream_urls)))) {
-                if (json.data && Array.isArray(json.data.stream_urls) && json.data.stream_urls.length > 0) {
-                  for (var i = 0; i < json.data.stream_urls.length; i++) {
-                    var streamUrl = json.data.stream_urls[i];
-                    if (streamUrl && !seenUrls.has(streamUrl) && (streamUrl.includes('.m3u8') || streamUrl.includes('.mp4'))) {
-                      seenUrls.add(streamUrl);
-                      var isHLS = !streamUrl.includes('.mp4') && !streamUrl.includes('.mkv');
-                      streams.push(new Nt({
-                        url: streamUrl,
-                        source: 'VidApi Server ' + (i + 1) + ' (HLS)',
-                        name: '⚡ VidApi Server ' + (i + 1) + ' [1080p HLS]',
-                        quality: 1080,
-                        type: isHLS ? 'hls' : 'mp4',
-                        isM3U8: isHLS,
-                        headers: {
-                          'User-Agent': DEFAULT_HEADERS['User-Agent']
-                        }
-                      }));
+            var mirrors = [
+              'https://streamdata.vaplayer.ru/api.php',
+              'https://vaplayer.ru/api.php'
+            ];
+
+            for (var m = 0; m < mirrors.length; m++) {
+              var mirrorBase = mirrors[m];
+              for (var k = 0; k < idsToTry.length; k++) {
+                var apiUrl = mirrorBase + '?' + idsToTry[k] + '&type=' + (type === 'movie' ? 'movie' : 'tv') + tvQuery;
+                var json = await fetchJson(apiUrl, {
+                  'User-Agent': DEFAULT_HEADERS['User-Agent'],
+                  'Referer': 'https://brightpathsignals.com/',
+                  'Origin': 'https://brightpathsignals.com'
+                });
+
+                if (json && (json.status_code == 200 || json.status_code === '200' || (json.data && json.data.stream_urls))) {
+                  var list = json.data ? json.data.stream_urls : null;
+                  var urlArray = Array.isArray(list) ? list : (typeof list === 'object' && list ? Object.values(list) : []);
+                  if (urlArray.length > 0) {
+                    for (var i = 0; i < urlArray.length; i++) {
+                      var streamUrl = urlArray[i];
+                      if (streamUrl && !seenUrls.has(streamUrl) && (streamUrl.includes('.m3u8') || streamUrl.includes('.mp4'))) {
+                        seenUrls.add(streamUrl);
+                        var isHLS = !streamUrl.includes('.mp4') && !streamUrl.includes('.mkv');
+                        var q = parseQuality(streamUrl);
+                        streams.push(new Nt({
+                          url: streamUrl,
+                          source: 'VidApi Server ' + (i + 1),
+                          name: '⚡ VidApi Server ' + (i + 1) + ' [' + q + 'p ' + (isHLS ? 'HLS' : 'MP4') + ']',
+                          quality: q,
+                          type: isHLS ? 'hls' : 'mp4',
+                          isM3U8: isHLS,
+                          headers: {
+                            'User-Agent': DEFAULT_HEADERS['User-Agent'],
+                            'Referer': mirrorBase,
+                            'Origin': 'https://brightpathsignals.com'
+                          }
+                        }));
+                      }
                     }
+                    return; // Successfully harvested VidApi mirror
                   }
-                  break; // Successful resolution, stop fallback loop
                 }
               }
             }
           } catch (e) {}
         })();
 
-        // 2. VixSrc Direct Multi-Audio HLS Master Streams (High-Speed .m3u8)
+        // 2. VixSrc Multi-Audio Direct Master HLS Streams
         var vixsrcPromise = (async function() {
           try {
             var resolvedTmdb = tmdbId || await cinemetaPromise;
@@ -318,50 +341,68 @@ var PluginModule = (() => {
             if (imdbId && imdbId !== resolvedTmdb) idsToTry.push(imdbId);
             if (idsToTry.length === 0) return;
 
-            for (var m = 0; m < idsToTry.length; m++) {
-              var idToUse = idsToTry[m];
-              var tvPath = type === 'movie' ? ('/api/movie/' + idToUse) : ('/api/tv/' + idToUse + '/' + season + '/' + episode);
-              var json = await fetchJson('https://vixsrc.to' + tvPath, {
-                'User-Agent': DEFAULT_HEADERS['User-Agent'],
-                'Referer': 'https://vixsrc.to',
-                'Origin': 'https://vixsrc.to'
-              });
-              if (json && json.src) {
-                var embedHtml = await fetchText('https://vixsrc.to' + json.src, {
+            var domains = [
+              'https://vixsrc.to',
+              'https://vixcloud.co',
+              'https://vixsrc.stream'
+            ];
+
+            for (var d = 0; d < domains.length; d++) {
+              var domain = domains[d];
+              for (var m = 0; m < idsToTry.length; m++) {
+                var idToUse = idsToTry[m];
+                var tvPath = type === 'movie' ? ('/api/movie/' + idToUse) : ('/api/tv/' + idToUse + '/' + season + '/' + episode);
+                var json = await fetchJson(domain + tvPath, {
                   'User-Agent': DEFAULT_HEADERS['User-Agent'],
-                  'Referer': 'https://vixsrc.to'
+                  'Referer': domain,
+                  'Origin': domain
                 });
-                var tokenMatch = embedHtml.match(/token["']\s*:\s*["']([^"']+)/);
-                var expiresMatch = embedHtml.match(/expires["']\s*:\s*["']([^"']+)/);
-                var playlistMatch = embedHtml.match(/url\s*:\s*["']([^"']+)/);
-                if (playlistMatch && tokenMatch && expiresMatch) {
-                  var playlistUrl = playlistMatch[1];
-                  var sep = playlistUrl.includes('?') ? '&' : '?';
-                  var masterUrl = playlistUrl + sep + 'token=' + tokenMatch[1] + '&expires=' + expiresMatch[1] + '&h=1';
-                  if (!seenUrls.has(masterUrl)) {
-                    seenUrls.add(masterUrl);
-                    streams.push(new Nt({
-                      url: masterUrl,
-                      source: 'VixSrc Multi-Audio (HLS)',
-                      name: '⚡ VixSrc Multi-Audio [1080p HLS]',
-                      quality: 1080,
-                      type: 'hls',
-                      isM3U8: true,
-                      headers: {
-                        'User-Agent': DEFAULT_HEADERS['User-Agent'],
-                        'Referer': 'https://vixsrc.to' + json.src,
-                        'Origin': 'https://vixsrc.to'
-                      }
-                    }));
+
+                if (json && json.src) {
+                  var embedUrl = json.src.startsWith('http') ? json.src : (domain + json.src);
+                  var embedHtml = await fetchText(embedUrl, {
+                    'User-Agent': DEFAULT_HEADERS['User-Agent'],
+                    'Referer': domain
+                  });
+
+                  var tokenMatch = embedHtml.match(/token["']\s*:\s*["']([^"']+)/) || embedHtml.match(/token\s*=\s*["']([^"']+)/);
+                  var expiresMatch = embedHtml.match(/expires["']\s*:\s*["']([^"']+)/) || embedHtml.match(/expires\s*=\s*["']([^"']+)/);
+                  var playlistMatch = embedHtml.match(/url\s*:\s*["']([^"']+)/) || embedHtml.match(/source\s*:\s*["']([^"']+)/);
+
+                  if (playlistMatch && tokenMatch && expiresMatch) {
+                    var playlistUrl = playlistMatch[1];
+                    var sep = playlistUrl.includes('?') ? '&' : '?';
+                    var masterUrl = playlistUrl + sep + 'token=' + tokenMatch[1] + '&expires=' + expiresMatch[1] + '&h=1';
+                    if (!seenUrls.has(masterUrl)) {
+                      seenUrls.add(masterUrl);
+                      var hostLabel = domain.replace('https://', '');
+                      streams.push(new Nt({
+                        url: masterUrl,
+                        source: 'VixSrc Multi-Audio (' + hostLabel + ')',
+                        name: '⚡ VixSrc Multi-Audio [1080p Master HLS]',
+                        quality: 1080,
+                        type: 'hls',
+                        isM3U8: true,
+                        headers: {
+                          'User-Agent': DEFAULT_HEADERS['User-Agent'],
+                          'Referer': embedUrl,
+                          'Origin': domain
+                        }
+                      }));
+                      return; // Found master playlist
+                    }
                   }
-                  break; // Found master playlist
                 }
               }
             }
           } catch (e) {}
         })();
 
-        await Promise.all([vidapiPromise, vixsrcPromise]);
+        // Execute all extractors in parallel with timeout protection
+        await Promise.all([
+          withTimeout(vidapiPromise, 8000),
+          withTimeout(vixsrcPromise, 8000)
+        ]);
 
         // Quality descending sort
         streams.sort(function(a, b) {
