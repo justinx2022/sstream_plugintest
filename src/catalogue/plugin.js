@@ -453,10 +453,17 @@ var PluginModule = (() => {
             if (type === 'series') {
               var sPad = season < 10 ? ('0' + season) : String(season);
               var ePad = episode < 10 ? ('0' + episode) : String(episode);
-              var seriesHit = searchData.hits.find(function(h) {
+              var matchingHits = searchData.hits.filter(function(h) {
+                var pt = ((h.document && h.document.post_title) || '').toLowerCase();
+                var words = cleanQuery.toLowerCase().split(' ').filter(function(w) { return w.length > 2; });
+                return words.length === 0 || words.every(function(w) { return pt.includes(w); });
+              });
+              if (matchingHits.length === 0) return;
+
+              var seriesHit = matchingHits.find(function(h) {
                 var pt = (h.document && h.document.post_title) || '';
                 return /season|series/i.test(pt);
-              }) || searchData.hits[0];
+              }) || matchingHits[0];
 
               if (!seriesHit || !seriesHit.document || !seriesHit.document.permalink) return;
               var pageUrl = seriesHit.document.permalink.startsWith('http') ? seriesHit.document.permalink : (mdBase + seriesHit.document.permalink);
@@ -510,10 +517,17 @@ var PluginModule = (() => {
                 }
               }
             } else {
-              var movieHit = searchData.hits.find(function(h) {
+              var matchingMovieHits = searchData.hits.filter(function(h) {
+                var pt = ((h.document && h.document.post_title) || '').toLowerCase();
+                var words = cleanQuery.toLowerCase().split(' ').filter(function(w) { return w.length > 2; });
+                return words.length === 0 || words.every(function(w) { return pt.includes(w); });
+              });
+              if (matchingMovieHits.length === 0) return;
+
+              var movieHit = matchingMovieHits.find(function(h) {
                 var pt = (h.document && h.document.post_title) || '';
                 return !/season|series/i.test(pt);
-              }) || searchData.hits[0];
+              }) || matchingMovieHits[0];
 
               if (!movieHit || !movieHit.document || !movieHit.document.permalink) return;
               var pageUrl = movieHit.document.permalink.startsWith('http') ? movieHit.document.permalink : (mdBase + movieHit.document.permalink);
