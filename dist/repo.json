@@ -1,0 +1,10 @@
+{
+  "name": "Justin's Extensions Repo",
+  "id": "dev.justin.extensions",
+  "packageName": "dev.justin.extensions",
+  "description": "Justin's Catalogue (Direct HLS 1080p), YoTurkish, and WLEXT",
+  "manifestVersion": 1,
+  "pluginLists": [
+    "https://raw.githubusercontent.com/justinx2022/sstream_plugintest/main/dist/plugins.json"
+  ]
+}
