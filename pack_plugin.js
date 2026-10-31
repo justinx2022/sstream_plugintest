@@ -2,8 +2,9 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 
-const pluginDir = 'C:/Users/odhia/.gemini/antigravity/scratch/cloudstream-plugins/src/catalogue';
-const distDir = 'C:/Users/odhia/.gemini/antigravity/scratch/cloudstream-plugins/dist';
+const repoDir = __dirname;
+const pluginDir = path.join(repoDir, 'src', 'catalogue');
+const distDir = path.join(repoDir, 'dist');
 const tempZip = path.join(distDir, 'dev.justin.catalogue.zip');
 const outSky = path.join(distDir, 'dev.justin.catalogue.sky');
 

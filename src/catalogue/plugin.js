@@ -610,9 +610,10 @@ var PluginModule = (() => {
                           type: isHLS ? 'hls' : 'mp4',
                           isM3U8: isHLS,
                           headers: {
-                            'User-Agent': DEFAULT_HEADERS['User-Agent'],
-                            'Referer': mirrorBase,
-                            'Origin': 'https://brightpathsignals.com'
+                            // Keep the CDN request free of the API site's
+                            // Referer/Origin. Those headers make its HLS
+                            // segments return 403 even when the playlist is 200.
+                            'User-Agent': DEFAULT_HEADERS['User-Agent']
                           }
                         }));
                       }
@@ -698,11 +699,19 @@ var PluginModule = (() => {
           withTimeout(vixsrcPromise, 8000)
         ]);
 
-        // Priority sort: HCS / direct cloud streams first, then quality descending
+        // VixSrc is the confirmed reliable stream for this catalogue. Keep it
+        // first for Auto selection, then direct HCS links, then other mirrors
+        // (including VidApi as a fallback). Preserve quality ordering per tier.
         streams.sort(function(a, b) {
-          var aHcs = (a.isHcs || a.type === 'mkv' || a.type === 'mp4' || !a.isM3U8) ? 1 : 0;
-          var bHcs = (b.isHcs || b.type === 'mkv' || b.type === 'mp4' || !b.isM3U8) ? 1 : 0;
-          if (aHcs !== bHcs) return bHcs - aHcs;
+          function rank(stream) {
+            if (/^VixSrc Multi-Audio/i.test(stream.source || '')) return 0;
+            if (stream.isHcs || stream.type === 'mkv' || stream.type === 'mp4' || !stream.isM3U8) return 1;
+            if (/^VidApi Server/i.test(stream.source || '')) return 3;
+            return 2;
+          }
+          var aRank = rank(a);
+          var bRank = rank(b);
+          if (aRank !== bRank) return aRank - bRank;
           return (b.quality || 0) - (a.quality || 0);
         });
 
