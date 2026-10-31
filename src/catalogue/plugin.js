@@ -395,6 +395,72 @@ var PluginModule = (() => {
       return results;
     }
 
+    function normalizeArchiveTitle(value) {
+      return String(value || '')
+        .replace(/\s*\(\d{4}\).*$/, '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, ' ')
+        .trim();
+    }
+
+    async function findArchivePublicDomainStreams(title, year) {
+      if (!title) return [];
+
+      try {
+        var cleanTitleValue = String(title).replace(/["\\]/g, ' ').replace(/\s+/g, ' ').trim();
+        var query = 'title:"' + cleanTitleValue + '" AND mediatype:movies AND licenseurl:*publicdomain*';
+        var searchUrl = 'https://archive.org/advancedsearch.php?q=' + encodeURIComponent(query) +
+          '&fl%5B%5D=identifier&fl%5B%5D=title&fl%5B%5D=year&fl%5B%5D=licenseurl&output=json&rows=8';
+        var searchData = await fetchJson(searchUrl);
+        var docs = searchData && searchData.response && Array.isArray(searchData.response.docs)
+          ? searchData.response.docs
+          : [];
+        var normalizedTitle = normalizeArchiveTitle(title);
+        var wantedYear = year ? String(year).slice(0, 4) : '';
+
+        var matches = docs.filter(function(doc) {
+          if (!doc || !doc.identifier || normalizeArchiveTitle(doc.title) !== normalizedTitle) return false;
+          return !wantedYear || !doc.year || String(doc.year).slice(0, 4) === wantedYear;
+        });
+
+        for (var i = 0; i < matches.length; i++) {
+          var item = matches[i];
+          var metadata = await fetchJson('https://archive.org/metadata/' + encodeURIComponent(item.identifier));
+          var license = String(metadata && metadata.metadata && metadata.metadata.licenseurl || item.licenseurl || '').toLowerCase();
+          var hasAllowedLicense = /creativecommons\.org\/(publicdomain\/(mark|zero)\/1\.0|licenses\/publicdomain\/)/.test(license);
+          if (!hasAllowedLicense || !metadata.metadata || metadata.metadata.mediatype !== 'movies' || !Array.isArray(metadata.files)) continue;
+
+          var metadataYear = String(metadata.metadata.year || metadata.metadata.date || '').slice(0, 4);
+          if (wantedYear && (!metadataYear || metadataYear !== wantedYear)) continue;
+
+          var videoFiles = metadata.files.filter(function(file) {
+            return file && typeof file.name === 'string' && /\.(mp4|m4v)$/i.test(file.name) &&
+              !/(sample|thumbnail|preview)/i.test(file.name);
+          });
+          videoFiles.sort(function(a, b) {
+            var aQuality = parseQuality(a.name);
+            var bQuality = parseQuality(b.name);
+            return (bQuality - aQuality) || (parseInt(b.size, 10) || 0) - (parseInt(a.size, 10) || 0);
+          });
+          if (videoFiles.length === 0) continue;
+
+          var file = videoFiles[0];
+          var fileUrl = 'https://archive.org/download/' + encodeURIComponent(item.identifier) + '/' +
+            file.name.split('/').map(encodeURIComponent).join('/');
+          return [{
+            url: fileUrl,
+            name: 'Internet Archive • CC0/Public Domain • MP4',
+            source: 'Internet Archive Public Domain',
+            type: 'mp4',
+            isM3U8: false,
+            headers: { 'User-Agent': DEFAULT_HEADERS['User-Agent'] }
+          }];
+        }
+      } catch (e) {}
+
+      return [];
+    }
+
     async function loadStreams(rawUrl, cb) {
       try {
         var parsed = null;
@@ -430,6 +496,22 @@ var PluginModule = (() => {
 
         var streams = [];
         var seenUrls = new Set();
+
+        // Public-domain/CC0 recordings from the Internet Archive are a direct
+        // file fallback for exact movie title/year matches. No embed page is
+        // returned to the player.
+        var archivePromise = (async function() {
+          try {
+            if (type !== 'movie') return;
+            var archiveStreams = await findArchivePublicDomainStreams(title, parsed.year);
+            archiveStreams.forEach(function(stream) {
+              if (stream && stream.url && !seenUrls.has(stream.url)) {
+                seenUrls.add(stream.url);
+                streams.push(new Nt(stream));
+              }
+            });
+          } catch (e) {}
+        })();
 
         // 0. High-Speed Cloud Sources (HCS) - HubCloud 10Gbps & PixelDrain Direct
         var hcsPromise = (async function() {
@@ -695,6 +777,7 @@ var PluginModule = (() => {
         // Execute all extractors in parallel with timeout protection
         await Promise.all([
           withTimeout(hcsPromise, 10000),
+          withTimeout(archivePromise, 8000),
           withTimeout(vidapiPromise, 8000),
           withTimeout(vixsrcPromise, 8000)
         ]);
@@ -705,9 +788,10 @@ var PluginModule = (() => {
         streams.sort(function(a, b) {
           function rank(stream) {
             if (/^VixSrc Multi-Audio/i.test(stream.source || '')) return 0;
-            if (stream.isHcs || stream.type === 'mkv' || stream.type === 'mp4' || !stream.isM3U8) return 1;
+            if (/^Internet Archive Public Domain/i.test(stream.source || '')) return 1;
+            if (stream.isHcs || stream.type === 'mkv' || stream.type === 'mp4' || !stream.isM3U8) return 2;
             if (/^VidApi Server/i.test(stream.source || '')) return 3;
-            return 2;
+            return 4;
           }
           var aRank = rank(a);
           var bRank = rank(b);
