@@ -1,7 +1,7 @@
 {
   "packageName": "dev.justin.wlext",
   "name": "WLEXT (Telenovelas)",
-  "version": 2,
+  "version": 3,
   "baseUrl": "https://wlext.is",
   "description": "WLEXT Telenovela World with English Subtitles and Dubbing",
   "authors": [

@@ -304,123 +304,158 @@ var PluginModule = (() => {
     } catch (err) {}
   }
 
+  function normalizeEmbedUrl(url, baseUrl) {
+    let value = String(url || "")
+      .replace(/&amp;/g, "&")
+      .replace(/&#038;/g, "&")
+      .replace(/&quot;/g, '"')
+      .trim();
+    if (value.startsWith("//")) return "https:" + value;
+    if (value.startsWith("/")) {
+      let origin = String(baseUrl || "").match(/^(https?:\/\/[^/]+)/i);
+      return origin ? origin[1] + value : value;
+    }
+    return value;
+  }
+
+  function withServer(url, server) {
+    let clean = String(url || "").replace(/([?&])server=[^&#]*&?/i, "$1");
+    clean = clean.replace(/[?&]$/, "");
+    let hash = "";
+    let hashAt = clean.indexOf("#");
+    if (hashAt >= 0) {
+      hash = clean.substring(hashAt);
+      clean = clean.substring(0, hashAt);
+    }
+    return clean + (clean.includes("?") ? "&" : "?") + "server=" + encodeURIComponent(server) + hash;
+  }
+
+  function collectMedia(body, referer, streams, seen, sourceName) {
+    let regex = /https?:\/\/[^"'\s<>]+?\.(?:m3u8|mp4)(?:\?[^"'\s<>]*)?/gi;
+    let match;
+    while ((match = regex.exec(String(body || ""))) !== null) {
+      let mediaUrl = match[0].replace(/[),;]+$/, "");
+      if (seen.has(mediaUrl)) continue;
+      seen.add(mediaUrl);
+      let isHls = /\.m3u8(?:\?|$)/i.test(mediaUrl);
+      streams.push(new StreamResult({
+        source: sourceName + (isHls ? " Direct HLS" : " Direct MP4"),
+        name: isHls ? "Direct HLS" : "Direct MP4",
+        url: mediaUrl,
+        quality: "Auto",
+        type: isHls ? "m3u8" : "mp4",
+        headers: {
+          "Referer": referer,
+          "User-Agent": defaultHeaders["User-Agent"]
+        }
+      }));
+    }
+  }
+
+  function iframeUrls(body, baseUrl) {
+    let result = [];
+    let regex = /<iframe\b[^>]*\bsrc\s*=\s*(["'])(.*?)\1/gi;
+    let match;
+    while ((match = regex.exec(String(body || ""))) !== null) {
+      let value = normalizeEmbedUrl(match[2], baseUrl);
+      if (value && !result.includes(value)) result.push(value);
+    }
+    return result;
+  }
+
   async function loadStreams(episodeUrl, callback) {
     try {
       let streams = [];
       let res = await http_get(episodeUrl, defaultHeaders);
 
-      if (res && res.body) {
-        let html = res.body;
+      if (!res || !res.body) throw new Error("WLEXT episode page returned no content.");
 
-        // 1. Discover all servers listed in <select name="server">
-        let serverOpts = [];
-        let sMatch = html.match(/<select[^>]*name="server"[^>]*>([\s\S]*?)<\/select>/i);
-        if (sMatch) {
-          let optRegex = /<option[^>]+value="([^"]+)"[^>]*>([\s\S]*?)<\/option>/gi;
-          let om;
-          while ((om = optRegex.exec(sMatch[1])) !== null) {
-            let val = om[1].trim();
-            if (val && !val.includes("select")) {
-              serverOpts.push(val);
-            }
+      let html = res.body;
+      let serverOpts = [];
+      let sMatch = html.match(/<select\b(?=[^>]*(?:id=["']servers["']|name=["']server["']))[^>]*>([\s\S]*?)<\/select>/i);
+      if (sMatch) {
+        let optRegex = /<option\b[^>]*value=["']([^"']+)["'][^>]*>([\s\S]*?)<\/option>/gi;
+        let option;
+        while ((option = optRegex.exec(sMatch[1])) !== null) {
+          let value = option[1].trim();
+          if (value && !/select/i.test(value) && !serverOpts.includes(value)) serverOpts.push(value);
+        }
+      }
+
+      let pages = [{ body: html, url: episodeUrl, referer: "https://wlext.is/" }];
+      // WLEXT replaces the player iframe when ?server=<option> is selected.
+      // Fetch every server advertised by the episode, including current SOAP
+      // BOX and HYDRA values, instead of relying on obsolete hard-coded IDs.
+      let serverPages = await Promise.all(serverOpts.map(async (server) => {
+        try {
+          let serverUrl = withServer(episodeUrl, server);
+          let serverRes = await http_get(serverUrl, defaultHeaders);
+          if (serverRes && serverRes.body) {
+            return { body: serverRes.body, url: serverUrl, referer: "https://wlext.is/" };
           }
-        }
+        } catch (serverError) {}
+        return null;
+      }));
+      pages.push(...serverPages.filter(Boolean));
 
-        // 2. Collect iframes from default page
-        let iframes = [];
-        let ifMatch = [...html.matchAll(/<iframe[^>]+src="([^"]+)"/gi)];
-        for (let im of ifMatch) {
-          iframes.push(im[1].trim());
-        }
+      let seenFrames = new Set();
+      let seenUrls = new Set();
+      for (let page of pages) {
+        collectMedia(page.body, page.referer, streams, seenUrls, "WLEXT");
+        for (let iframe of iframeUrls(page.body, page.url)) {
+          if (seenFrames.has(iframe)) continue;
+          seenFrames.add(iframe);
 
-        // 3. If OK.ru is available in server options, fetch its iframe
-        if (serverOpts.includes("okru")) {
-          try {
-            let sep = episodeUrl.includes("?") ? "&" : "?";
-            let okUrl = episodeUrl + sep + "server=okru";
-            let okRes = await http_get(okUrl, defaultHeaders);
-            if (okRes && okRes.body) {
-              let okIframes = [...okRes.body.matchAll(/<iframe[^>]+src="([^"]+)"/gi)];
-              for (let oim of okIframes) {
-                iframes.push(oim[1].trim());
-              }
-            }
-          } catch (e) {}
-        }
-
-        // 4. Also check ommatop server if listed
-        if (serverOpts.includes("ommatop")) {
-          try {
-            let sep = episodeUrl.includes("?") ? "&" : "?";
-            let ommaUrl = episodeUrl + sep + "server=ommatop";
-            let ommaRes = await http_get(ommaUrl, defaultHeaders);
-            if (ommaRes && ommaRes.body) {
-              let ommaIframes = [...ommaRes.body.matchAll(/<iframe[^>]+src="([^"]+)"/gi)];
-              for (let oim of ommaIframes) {
-                iframes.push(oim[1].trim());
-              }
-            }
-          } catch (e) {}
-        }
-
-        // 5. Process discovered iframe targets
-        for (let iframe of iframes) {
-          if (!iframe) continue;
-
-          // Domain rewrite according to WLEXT script:
           if (iframe.includes("elitecloud.top/")) {
             iframe = iframe.replace("elitecloud.top/", "elite.rpmhub.site/");
           }
-
-          // A. OK.ru extractor
           if (iframe.includes("ok.ru/videoembed/")) {
             await extractOkRu(iframe, streams);
+            continue;
           }
-        }
 
-        // 6. Direct media links scan in page HTML
-        let mediaRegex = /https?:\/\/[^"'\s<>]+\.(?:m3u8|mp4)[^"'\s<>]*/gi;
-        let mm;
-        let seenUrls = new Set(streams.map(s => s.url));
-        while ((mm = mediaRegex.exec(html)) !== null) {
-          let mUrl = mm[0].trim();
-          if (mUrl.includes(".m3u8") && !seenUrls.has(mUrl)) {
-            seenUrls.add(mUrl);
-            streams.push(new StreamResult({
-              source: "WLEXT Direct HLS",
-              name: "Direct FHD (1080p)",
-              url: mUrl,
-              quality: "1080p",
-              type: "m3u8",
-              headers: {
-                "Referer": "https://wlext.is/",
-                "User-Agent": defaultHeaders["User-Agent"]
+          // Scrape static provider embeds for direct media and one nested
+          // iframe level. SOAP BOX serves a JavaScript player shell rather
+          // than a media URL, so don't hand its HTML page to the video player.
+          if (/sobox\.top/i.test(iframe)) continue;
+          try {
+            let embedRes = await http_get(iframe, {
+              "User-Agent": defaultHeaders["User-Agent"],
+              "Referer": page.url
+            });
+            if (!embedRes || !embedRes.body) continue;
+            let embedBase = embedRes.finalUrl || iframe;
+            collectMedia(embedRes.body, embedBase, streams, seenUrls, "WLEXT Provider");
+            for (let nested of iframeUrls(embedRes.body, embedBase)) {
+              if (seenFrames.has(nested) || nested.includes("sobox.top")) continue;
+              seenFrames.add(nested);
+              if (nested.includes("ok.ru/videoembed/")) {
+                await extractOkRu(nested, streams);
+                continue;
               }
-            }));
-          } else if (mUrl.includes(".mp4") && !seenUrls.has(mUrl)) {
-            seenUrls.add(mUrl);
-            streams.push(new StreamResult({
-              source: "WLEXT Direct MP4",
-              name: "Direct MP4 (1080p)",
-              url: mUrl,
-              quality: "1080p",
-              type: "mp4",
-              headers: {
-                "Referer": "https://wlext.is/",
-                "User-Agent": defaultHeaders["User-Agent"]
-              }
-            }));
-          }
+              try {
+                let nestedRes = await http_get(nested, {
+                  "User-Agent": defaultHeaders["User-Agent"],
+                  "Referer": embedBase
+                });
+                if (nestedRes && nestedRes.body) {
+                  collectMedia(nestedRes.body, nestedRes.finalUrl || nested, streams, seenUrls, "WLEXT Provider");
+                }
+              } catch (nestedError) {}
+            }
+          } catch (embedError) {}
         }
       }
 
       if (callback && typeof callback === "function") {
-        callback({ success: true, data: streams });
+        callback(streams.length
+          ? { success: true, data: streams }
+          : { success: false, errorCode: "STREAMS_UNAVAILABLE", message: "WLEXT listed servers, but none exposed a playable media URL. SOAP BOX currently uses a JavaScript player, and the advertised HYDRA link may be unavailable." });
       }
       return streams;
     } catch (e) {
       if (callback && typeof callback === "function") {
-        callback({ success: true, data: [] });
+        callback({ success: false, errorCode: "STREAMS_UNAVAILABLE", message: e.message || "WLEXT did not return a playable server." });
       }
       return [];
     }
