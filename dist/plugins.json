@@ -20,7 +20,7 @@
   {
     "packageName": "dev.justin.yoturkish",
     "name": "YoTurkish",
-    "version": 3,
+    "version": 4,
     "baseUrl": "https://yoturkish.to",
     "description": "YoTurkish Turkish Series with English Subtitles",
     "authors": [
