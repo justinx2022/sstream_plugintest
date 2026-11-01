@@ -330,25 +330,126 @@ var PluginModule = (() => {
     return clean + (clean.includes("?") ? "&" : "?") + "server=" + encodeURIComponent(server) + hash;
   }
 
-  function collectMedia(body, referer, streams, seen, sourceName) {
-    let regex = /https?:\/\/[^"'\s<>]+?\.(?:m3u8|mp4)(?:\?[^"'\s<>]*)?/gi;
+  function mediaQuality(text) {
+    let value = String(text || "");
+    let dimensions = value.match(/\b\d{3,5}\s*[x×]\s*(\d{3,5})\b/i);
+    let height = dimensions ? parseInt(dimensions[1], 10) : 0;
+    if (!height) {
+      let scan = value.match(/(?:^|[^0-9])(2160|1440|1080|720|576|480|360|240)(?:p\b|(?=[_.?/#&-]))/i);
+      height = scan ? parseInt(scan[1], 10) : 0;
+    }
+    if (!height && /\b(?:4k|uhd)\b/i.test(value)) return "4K";
+    if (!height && /\b(?:2k|qhd)\b/i.test(value)) return "2K";
+    if (!height && /\b(?:fhd|full\s*hd)\b/i.test(value)) return "1080p";
+    if (height >= 1800) return "4K";
+    if (height >= 1260) return "2K";
+    if (height >= 900) return "1080p";
+    if (height >= 600) return "720p";
+    if (height >= 420) return "480p";
+    if (height > 0) return "360p";
+    return "Auto";
+  }
+
+  function resolveMediaUrl(url, baseUrl) {
+    let value = String(url || "").trim().replace(/&amp;/g, "&");
+    if (/^https?:\/\//i.test(value)) return value;
+    if (value.startsWith("//")) {
+      let protocol = String(baseUrl || "").match(/^(https?:)/i);
+      return (protocol ? protocol[1] : "https:") + value;
+    }
+    let origin = String(baseUrl || "").match(/^(https?:\/\/[^/]+)/i);
+    if (!origin) return "";
+    if (value.startsWith("/")) return origin[1] + value;
+    let cleanBase = String(baseUrl).split(/[?#]/)[0];
+    let pathPart = cleanBase.substring(origin[1].length);
+    let basePath = pathPart.substring(0, pathPart.lastIndexOf("/") + 1);
+    let parts = (basePath + value).split("/");
+    let normalized = [];
+    for (let part of parts) {
+      if (!part || part === ".") continue;
+      if (part === "..") normalized.pop();
+      else normalized.push(part);
+    }
+    return origin[1] + "/" + normalized.join("/");
+  }
+
+  function addMediaCandidate(url, referer, streams, seen, sourceName, hint) {
+    let mediaUrl = resolveMediaUrl(url, referer);
+    if (!mediaUrl || seen.has(mediaUrl)) return;
+    seen.add(mediaUrl);
+    let isHls = /\.m3u8(?:\?|$)/i.test(mediaUrl);
+    let quality = mediaQuality(String(hint || "") + " " + mediaUrl);
+    streams.push(new StreamResult({
+      // SkyStream derives quality from `source`; the JS bridge does not carry
+      // separate `quality` or `type` fields from plugin objects.
+      source: sourceName + " " + quality + (isHls ? " HLS" : " Direct"),
+      name: quality + (isHls ? " HLS" : ""),
+      url: mediaUrl,
+      headers: {
+        "Referer": referer,
+        "User-Agent": defaultHeaders["User-Agent"]
+      }
+    }));
+  }
+
+  async function collectMedia(body, referer, streams, seen, sourceName) {
+    let html = String(body || "")
+      .replace(/\\\//g, "/")
+      .replace(/\\u0026/gi, "&")
+      .replace(/&#038;/g, "&")
+      .replace(/&amp;/g, "&");
+    let regex = /(?:https?:)?\/\/[^"'\s<>]+?\.(?:m3u8|mp4)(?:\?[^"'\s<>]*)?/gi;
     let match;
-    while ((match = regex.exec(String(body || ""))) !== null) {
+    let candidates = [];
+    while ((match = regex.exec(html)) !== null) {
       let mediaUrl = match[0].replace(/[),;]+$/, "");
-      if (seen.has(mediaUrl)) continue;
-      seen.add(mediaUrl);
-      let isHls = /\.m3u8(?:\?|$)/i.test(mediaUrl);
-      streams.push(new StreamResult({
-        source: sourceName + (isHls ? " Direct HLS" : " Direct MP4"),
-        name: isHls ? "Direct HLS" : "Direct MP4",
-        url: mediaUrl,
-        quality: "Auto",
-        type: isHls ? "m3u8" : "mp4",
-        headers: {
-          "Referer": referer,
-          "User-Agent": defaultHeaders["User-Agent"]
-        }
-      }));
+      candidates.push({ url: mediaUrl, hint: html.substring(Math.max(0, match.index - 96), match.index) });
+    }
+    let relativeRegex = /(?:^|[\s"'=(])((?:\.\.?\/|\/)[^"'\s<>]+?\.(?:m3u8|mp4)(?:\?[^"'\s<>]*)?)/gim;
+    while ((match = relativeRegex.exec(html)) !== null) {
+      let mediaUrl = match[1].replace(/[),;]+$/, "");
+      candidates.push({ url: mediaUrl, hint: html.substring(Math.max(0, match.index - 96), match.index) });
+    }
+
+    // Static hosts often expose a master playlist rather than variant links.
+    // Expand its renditions so SkyStream's at-or-below quality cap can filter
+    // them using the source label instead of letting mpv choose an uncapped HD
+    // rendition behind the cap.
+    for (let candidate of candidates) {
+      let mediaUrl = resolveMediaUrl(candidate.url, referer);
+      if (/\.m3u8(?:\?|$)/i.test(mediaUrl) && !seen.has(mediaUrl)) {
+        try {
+          let playlist = await quickHttpGet(mediaUrl, {
+            "User-Agent": defaultHeaders["User-Agent"],
+            "Referer": referer
+          }, 4500);
+          let playlistBody = playlist && playlist.body ? String(playlist.body) : "";
+          let variants = [];
+          if (playlistBody.indexOf("#EXTM3U") >= 0) {
+            let lines = playlistBody.replace(/\r/g, "").split("\n");
+            for (let i = 0; i < lines.length; i++) {
+              if (!/^\s*#EXT-X-STREAM-INF:/i.test(lines[i])) continue;
+              let attrs = lines[i];
+              let uri = "";
+              for (let j = i + 1; j < lines.length; j++) {
+                if (lines[j].trim() && lines[j].trim().charAt(0) !== "#") {
+                  uri = lines[j].trim();
+                  break;
+                }
+              }
+              if (uri) variants.push({ url: uri, hint: attrs });
+            }
+          }
+          if (variants.length) {
+            seen.add(mediaUrl);
+            for (let variant of variants) {
+              addMediaCandidate(variant.url, mediaUrl, streams, seen, sourceName, variant.hint);
+            }
+            continue;
+          }
+        } catch (playlistError) {}
+      }
+      addMediaCandidate(mediaUrl, referer, streams, seen, sourceName, candidate.hint);
     }
   }
 
@@ -363,12 +464,82 @@ var PluginModule = (() => {
     return result;
   }
 
+  function responseStatus(response) {
+    let status = Number(response && (response.statusCode || response.status || 0));
+    return status > 0 ? status : 0;
+  }
+
+  function responseHasContent(response) {
+    let status = responseStatus(response);
+    return !!(response && response.body) && (!status || (status >= 200 && status < 300));
+  }
+
+  function safeHost(url) {
+    let match = String(url || "").match(/^https?:\/\/([^/:?#]+)/i);
+    return match ? match[1].toLowerCase() : "unknown-host";
+  }
+
+  async function quickHttpGet(url, headers, timeoutMs) {
+    let timer = null;
+    let request = http_get(url, headers || {});
+    try {
+      return await Promise.race([
+        request,
+        new Promise(resolve => {
+          timer = setTimeout(() => resolve(null), timeoutMs || 4500);
+        })
+      ]);
+    } finally {
+      if (timer !== null) clearTimeout(timer);
+    }
+  }
+
+  async function inspectSpaFolder(iframe, streams, seenUrls, diagnostics) {
+    let originMatch = String(iframe).match(/^(https?:\/\/[^/]+)/i);
+    let folderMatch = String(iframe).match(/#([^?&#/]+)/);
+    if (!originMatch || !folderMatch) return false;
+    let origin = originMatch[1];
+    let folderId = folderMatch[1];
+    let apiUrl = origin + "/api/v1/folder?id=" + encodeURIComponent(folderId);
+    try {
+      let response = await quickHttpGet(apiUrl, {
+        "User-Agent": defaultHeaders["User-Agent"],
+        "Referer": iframe,
+        "Origin": origin,
+        "Accept": "application/json, text/plain, */*"
+      }, 4500);
+      if (!response) {
+        diagnostics.push(safeHost(iframe) + "=folder-api-timeout");
+        return true;
+      }
+      let status = responseStatus(response);
+      let body = String(response.body || "");
+      if (status === 404 || /folder not found or deleted/i.test(body)) {
+        diagnostics.push(safeHost(iframe) + "=folder-deleted");
+        return true;
+      }
+      if (!responseHasContent(response)) {
+        diagnostics.push(safeHost(iframe) + "=folder-api-" + (status || "unavailable"));
+        return true;
+      }
+      let before = streams.length;
+      await collectMedia(body, apiUrl, streams, seenUrls, "WLEXT " + safeHost(iframe));
+      diagnostics.push(safeHost(iframe) + (streams.length > before ? "=media-found" : "=folder-without-direct-media"));
+      return true;
+    } catch (error) {
+      diagnostics.push(safeHost(iframe) + "=folder-api-error");
+      return true;
+    }
+  }
+
   async function loadStreams(episodeUrl, callback) {
     try {
       let streams = [];
-      let res = await http_get(episodeUrl, defaultHeaders);
+      let res = await quickHttpGet(episodeUrl, defaultHeaders, 6000);
 
-      if (!res || !res.body) throw new Error("WLEXT episode page returned no content.");
+      if (!responseHasContent(res)) {
+        throw new Error("WLEXT episode page returned HTTP " + (responseStatus(res) || "timeout or no response") + ".");
+      }
 
       let html = res.body;
       let serverOpts = [];
@@ -378,22 +549,35 @@ var PluginModule = (() => {
         let option;
         while ((option = optRegex.exec(sMatch[1])) !== null) {
           let value = option[1].trim();
-          if (value && !/select/i.test(value) && !serverOpts.includes(value)) serverOpts.push(value);
+          if (value && !/select/i.test(value) && !serverOpts.some(item => item.value === value)) {
+            serverOpts.push({ value: value, label: cleanString(option[2]) || value });
+          }
         }
       }
 
-      let pages = [{ body: html, url: episodeUrl, referer: "https://wlext.is/" }];
+      let pages = [{ body: html, url: episodeUrl, referer: "https://wlext.is/", source: "WLEXT" }];
+      let serverDiagnostics = [];
+      let embedDiagnostics = [];
       // WLEXT replaces the player iframe when ?server=<option> is selected.
       // Fetch every server advertised by the episode, including current SOAP
       // BOX and HYDRA values, instead of relying on obsolete hard-coded IDs.
       let serverPages = await Promise.all(serverOpts.map(async (server) => {
         try {
-          let serverUrl = withServer(episodeUrl, server);
-          let serverRes = await http_get(serverUrl, defaultHeaders);
-          if (serverRes && serverRes.body) {
-            return { body: serverRes.body, url: serverUrl, referer: "https://wlext.is/" };
+          let serverUrl = withServer(episodeUrl, server.value);
+          let serverRes = await quickHttpGet(serverUrl, defaultHeaders, 5000);
+          let status = responseStatus(serverRes);
+          serverDiagnostics.push(server.value + "=" + (status || (responseHasContent(serverRes) ? "ok" : "timeout-or-no-response")));
+          if (responseHasContent(serverRes)) {
+            return {
+              body: serverRes.body,
+              url: serverUrl,
+              referer: "https://wlext.is/",
+              source: "WLEXT " + cleanString(server.label).replace(/^SERVER:\s*/i, "")
+            };
           }
-        } catch (serverError) {}
+        } catch (serverError) {
+          serverDiagnostics.push(server.value + "=request-error");
+        }
         return null;
       }));
       pages.push(...serverPages.filter(Boolean));
@@ -401,7 +585,7 @@ var PluginModule = (() => {
       let seenFrames = new Set();
       let seenUrls = new Set();
       for (let page of pages) {
-        collectMedia(page.body, page.referer, streams, seenUrls, "WLEXT");
+        await collectMedia(page.body, page.referer, streams, seenUrls, page.source);
         for (let iframe of iframeUrls(page.body, page.url)) {
           if (seenFrames.has(iframe)) continue;
           seenFrames.add(iframe);
@@ -417,15 +601,25 @@ var PluginModule = (() => {
           // Scrape static provider embeds for direct media and one nested
           // iframe level. SOAP BOX serves a JavaScript player shell rather
           // than a media URL, so don't hand its HTML page to the video player.
-          if (/sobox\.top/i.test(iframe)) continue;
+          if (/sobox\.top/i.test(iframe)) {
+            await inspectSpaFolder(iframe, streams, seenUrls, embedDiagnostics);
+            continue;
+          }
+          if (/elite\.rpmhub\.site/i.test(iframe)) {
+            await inspectSpaFolder(iframe, streams, seenUrls, embedDiagnostics);
+            continue;
+          }
           try {
-            let embedRes = await http_get(iframe, {
+            let embedRes = await quickHttpGet(iframe, {
               "User-Agent": defaultHeaders["User-Agent"],
               "Referer": page.url
-            });
-            if (!embedRes || !embedRes.body) continue;
+            }, 4500);
+            if (!responseHasContent(embedRes)) {
+              embedDiagnostics.push(safeHost(iframe) + "=" + (responseStatus(embedRes) || "unavailable"));
+              continue;
+            }
             let embedBase = embedRes.finalUrl || iframe;
-            collectMedia(embedRes.body, embedBase, streams, seenUrls, "WLEXT Provider");
+            await collectMedia(embedRes.body, embedBase, streams, seenUrls, page.source + " " + safeHost(embedBase));
             for (let nested of iframeUrls(embedRes.body, embedBase)) {
               if (seenFrames.has(nested) || nested.includes("sobox.top")) continue;
               seenFrames.add(nested);
@@ -434,16 +628,20 @@ var PluginModule = (() => {
                 continue;
               }
               try {
-                let nestedRes = await http_get(nested, {
+                let nestedRes = await quickHttpGet(nested, {
                   "User-Agent": defaultHeaders["User-Agent"],
                   "Referer": embedBase
-                });
-                if (nestedRes && nestedRes.body) {
-                  collectMedia(nestedRes.body, nestedRes.finalUrl || nested, streams, seenUrls, "WLEXT Provider");
+                }, 4500);
+                if (responseHasContent(nestedRes)) {
+                  await collectMedia(nestedRes.body, nestedRes.finalUrl || nested, streams, seenUrls, page.source + " " + safeHost(nested));
+                } else {
+                  embedDiagnostics.push(safeHost(nested) + "=" + (responseStatus(nestedRes) || "unavailable"));
                 }
               } catch (nestedError) {}
             }
-          } catch (embedError) {}
+          } catch (embedError) {
+            embedDiagnostics.push(safeHost(iframe) + "=request-error");
+          }
         }
       }
 
@@ -452,11 +650,15 @@ var PluginModule = (() => {
           ? { success: true, data: streams }
           : { success: false, errorCode: "STREAMS_UNAVAILABLE", message: "WLEXT listed servers, but none exposed a playable media URL. SOAP BOX currently uses a JavaScript player, and the advertised HYDRA link may be unavailable." });
       }
+      if (!streams.length) {
+        console.error("[WLEXT] No playable media URLs. Servers=" + (serverDiagnostics.join(",") || "none") + "; embeds=" + (embedDiagnostics.join(",") || "none"));
+      }
       return streams;
     } catch (e) {
       if (callback && typeof callback === "function") {
         callback({ success: false, errorCode: "STREAMS_UNAVAILABLE", message: e.message || "WLEXT did not return a playable server." });
       }
+      console.error("[WLEXT] Stream extraction failed: " + (e.message || String(e)));
       return [];
     }
   }
