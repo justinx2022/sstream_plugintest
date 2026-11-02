@@ -25,6 +25,7 @@ var PluginModule = (() => {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
       'Accept': 'application/json, text/plain, */*'
     };
+    var CATEGORY_PAGE_SIZE = 24;
 
     function parseQuality(str) {
       var s = String(str || '').toLowerCase();
@@ -99,6 +100,44 @@ var PluginModule = (() => {
       } catch (err) {
         cb({ success: false, errorCode: 'SITE_OFFLINE', message: err.message || String(err) });
       }
+    }
+
+    async function getCategoryPage(category, page, offset) {
+      var feeds = [
+        { title: 'Popular Movies', url: CINEMETA_CATALOG + '/movie/top.json', type: 'movie' },
+        { title: 'Popular Series', url: CINEMETA_CATALOG + '/series/top.json', type: 'series' },
+        { title: 'Top Rated Movies', url: CINEMETA_CATALOG + '/movie/imdbRating.json', type: 'movie' },
+        { title: 'Top Rated Series', url: CINEMETA_CATALOG + '/series/imdbRating.json', type: 'series' },
+        { title: 'Action & Adventure', url: CINEMETA_CATALOG + '/movie/top/genre=Action.json', type: 'movie' },
+        { title: 'Sci-Fi & Fantasy', url: CINEMETA_CATALOG + '/series/top/genre=Sci-Fi.json', type: 'series' }
+      ];
+      var feed = feeds.find(function(item) { return item.title === category; });
+      if (!feed) return [];
+      var start = Math.max(0, Number(offset) || 0);
+      // This catalogue endpoint accepts `skip` for the unfiltered catalogs,
+      // but silently drops genre filters when both extras are combined. Its
+      // genre feeds return one 50-item result, so page those locally.
+      var isGenreFeed = feed.url.indexOf('/genre=') >= 0;
+      var url = isGenreFeed
+        ? feed.url
+        : feed.url.replace(/\.json$/, '/skip=' + start + '.json');
+      var json = await fetchJson(url);
+      if (!json || !Array.isArray(json.metas)) return [];
+      var metas = isGenreFeed
+        ? json.metas.slice(start, start + CATEGORY_PAGE_SIZE)
+        : json.metas.slice(0, CATEGORY_PAGE_SIZE);
+      return metas.map(function(m) {
+        return new mt({
+          title: m.name,
+          url: JSON.stringify({ id: m.imdb_id || m.id, type: feed.type, title: m.name, year: m.releaseInfo }),
+          posterUrl: m.poster || '',
+          bannerUrl: m.background || '',
+          description: m.description || '',
+          year: parseInt(m.releaseInfo, 10) || undefined,
+          score: parseFloat(m.imdbRating) || undefined,
+          type: feed.type
+        });
+      });
     }
 
     async function search(query, cb) {
@@ -806,6 +845,7 @@ var PluginModule = (() => {
     }
 
     globalThis.getHome = getHome;
+    globalThis.getCategoryPage = getCategoryPage;
     globalThis.search = search;
     globalThis.load = load;
     globalThis.loadStreams = loadStreams;

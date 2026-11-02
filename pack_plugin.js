@@ -7,7 +7,7 @@ const distDir = path.join(repoDir, 'dist');
 const plugins = [
   { dir: 'catalogue', bundle: 'dev.justin.catalogue' },
   { dir: 'yoturkish', bundle: 'dev.justin.yoturkish' },
-  { dir: 'wlext', bundle: 'dev.justin.wlext_v4' },
+  { dir: 'wlext', bundle: 'dev.justin.wlext_v5' },
 ];
 
 for (const { dir, bundle } of plugins) {

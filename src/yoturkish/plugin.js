@@ -4,6 +4,7 @@ var PluginModule = (() => {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Referer": "https://yoturkish.to/"
   };
+  let allSeriesCache = null;
 
   function base64Encode(str) {
     if (typeof btoa === "function") {
@@ -134,6 +135,55 @@ var PluginModule = (() => {
       }
       return { "New Episodes": [], "Turkish Series": [] };
     }
+  }
+
+  async function getCategoryPage(category, page, offset) {
+    const start = Math.max(0, Number(offset) || 0);
+    const pageSize = 24;
+    if (category === "New Episodes") {
+      if (page < 2) return [];
+      const res = await http_get("https://yoturkish.to/episodes/page/" + page + "/", defaultHeaders);
+      if (!res || !res.body) return [];
+      const items = [];
+      const seen = new Set();
+      const regex = /<a\s+[^>]*href="([^"]+)"\s+title="([^"]+)"\s+class="poster">[\s\S]*?<img[^>]+src="([^"]+)"/gi;
+      let match;
+      while ((match = regex.exec(res.body)) !== null) {
+        const url = match[1].trim();
+        if (seen.has(url)) continue;
+        seen.add(url);
+        items.push(new MultimediaItem({
+          title: match[2].replace(/&#8211;/g, "-").trim(),
+          url,
+          posterUrl: match[3].trim(),
+          type: "series"
+        }));
+      }
+      return items;
+    }
+
+    if (category !== "Turkish Series") return [];
+    if (!allSeriesCache) {
+      const res = await http_get("https://yoturkish.to/series/", defaultHeaders);
+      if (!res || !res.body) return [];
+      const items = [];
+      const seen = new Set();
+      const regex = /<a\s+[^>]*href="([^"]+)"\s+title="([^"]+)"\s+class="poster">[\s\S]*?<img[^>]+src="([^"]+)"/gi;
+      let match;
+      while ((match = regex.exec(res.body)) !== null) {
+        const url = match[1].trim();
+        if (seen.has(url)) continue;
+        seen.add(url);
+        items.push(new MultimediaItem({
+          title: match[2].replace(/&#8211;/g, "-").trim(),
+          url,
+          posterUrl: match[3].trim(),
+          type: "series"
+        }));
+      }
+      allSeriesCache = items;
+    }
+    return allSeriesCache.slice(start, start + pageSize);
   }
 
   async function search(query, callback) {
@@ -351,6 +401,7 @@ var PluginModule = (() => {
 
   return {
     getHome: getHome,
+    getCategoryPage: getCategoryPage,
     search: search,
     load: load,
     loadStreams: loadStreams

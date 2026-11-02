@@ -1,7 +1,8 @@
 {
   "packageName": "dev.justin.yoturkish",
   "name": "YoTurkish",
-  "version": 4,
+  "version": 5,
+  "supportsCategoryPagination": true,
   "baseUrl": "https://yoturkish.to",
   "description": "YoTurkish Turkish Series with English Subtitles",
   "authors": ["Justin"],

@@ -94,6 +94,17 @@ var PluginModule = (() => {
     }
   }
 
+  async function getCategoryPage(category, page) {
+    const routes = {
+      "Featured Telenovelas": "https://wlext.is/telenovela-world-1/",
+      "Telenovela World": "https://wlext.is/genre/telenovela/"
+    };
+    const root = routes[category];
+    if (!root || page < 2) return [];
+    const res = await http_get(root + "page/" + page + "/", defaultHeaders);
+    return res && res.body ? parseCards(res.body) : [];
+  }
+
   async function search(query, callback) {
     try {
       let searchUrl = "https://wlext.is/?s=" + encodeURIComponent(query);
@@ -665,6 +676,7 @@ var PluginModule = (() => {
 
   return {
     getHome: getHome,
+    getCategoryPage: getCategoryPage,
     search: search,
     load: load,
     loadStreams: loadStreams

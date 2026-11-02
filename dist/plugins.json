@@ -2,7 +2,8 @@
   {
     "packageName": "dev.justin.catalogue",
     "name": "JUSTIN'S CATALOGUE",
-    "version": 12,
+    "version": 13,
+    "supportsCategoryPagination": true,
     "baseUrl": "https://v3-cinemeta.strem.io",
     "description": "Justin's Universal Hollywood & Western Movies and TV Series Catalog (Multi-Source Direct HCS Cloud 10Gbps, PixelDrain & High-Speed Streams)",
     "authors": [
@@ -20,7 +21,8 @@
   {
     "packageName": "dev.justin.yoturkish",
     "name": "YoTurkish",
-    "version": 4,
+    "version": 5,
+    "supportsCategoryPagination": true,
     "baseUrl": "https://yoturkish.to",
     "description": "YoTurkish Turkish Series with English Subtitles",
     "authors": [
@@ -38,7 +40,8 @@
   {
     "packageName": "dev.justin.wlext",
     "name": "WLEXT (Telenovelas)",
-    "version": 4,
+    "version": 5,
+    "supportsCategoryPagination": true,
     "baseUrl": "https://wlext.is",
     "description": "WLEXT Telenovela World with English Subtitles and Dubbing",
     "authors": [
@@ -52,6 +55,6 @@
     "categories": [
       "TvSeries"
     ],
-    "url": "https://raw.githubusercontent.com/justinx2022/sstream_plugintest/main/dist/dev.justin.wlext_v4.sky"
+    "url": "https://raw.githubusercontent.com/justinx2022/sstream_plugintest/main/dist/dev.justin.wlext_v5.sky"
   }
 ]
