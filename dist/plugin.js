@@ -58,11 +58,37 @@ var PluginModule = (() => {
   }
 
   function unpackDeanEdwards(code) {
-    let match = code.match(/eval\(function\(p,a,c,k,e,d\)[\s\S]*?\.split\('\|'\)\)\)/);
-    if (!match) return null;
+    if (!code) return null;
     try {
-      let withoutEval = match[0].replace(/^eval/, "");
-      return (new Function("return " + withoutEval))();
+      const match = code.match(/}\s*\('(.*)',\s*(.*?),\s*(\d+),\s*'(.*?)'\.split\('\|'\)/s);
+      if (!match || match.length < 5) return null;
+
+      const payload = match[1].replace(/\\'/g, "'");
+      const radix = parseInt(match[2], 10) || 36;
+      const symtab = match[4].split('|');
+
+      const alphabet62 = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+      function unbase(str) {
+        if (radix <= 36) {
+          const v = parseInt(str, radix);
+          return isNaN(v) ? -1 : v;
+        }
+        let res = 0;
+        for (let i = 0; i < str.length; i++) {
+          const idx = alphabet62.indexOf(str[i]);
+          if (idx === -1) return -1;
+          res = res * radix + idx;
+        }
+        return res;
+      }
+
+      return payload.replace(/\b[a-zA-Z0-9_]+\b/g, (word) => {
+        const idx = unbase(word);
+        if (idx >= 0 && idx < symtab.length && symtab[idx]) {
+          return symtab[idx];
+        }
+        return word;
+      });
     } catch (e) {
       return null;
     }

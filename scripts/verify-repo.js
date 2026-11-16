@@ -1,11 +1,11 @@
 /**
- * SkyStream Repository & Plugin Integrity Verifier
+ * Aether Repository & Plugin Integrity Verifier
  * 
  * Verifies:
  * 1. repo.json integrity and reachable pluginLists
  * 2. dist/plugins.json schema, types, and required fields
  * 3. Every .sky bundle is a genuine standard ZIP archive (PK\x03\x04)
- * 4. Every .sky bundle contains root-level 'plugin.json' and 'plugin.js' (SkyStream V2 requirement)
+ * 4. Every .sky bundle contains root-level 'plugin.json' and 'plugin.js' (Aether V2 requirement)
  * 5. JavaScript syntax of plugin.js is valid
  * 6. Provider functions (getHome, search, load, loadStreams) are defined
  */
@@ -56,7 +56,7 @@ function inspectZip(buf) {
   return { isZip: true, files };
 }
 
-console.log('=== Starting SkyStream Plugin & Repo Verification ===\n');
+console.log('=== Starting Aether Plugin & Repo Verification ===\n');
 
 // 1. Verify repo.json
 if (!fs.existsSync(REPO_JSON)) {
@@ -126,7 +126,7 @@ for (const p of plugins) {
   const zipInfo = inspectZip(skyBuf);
 
   if (!zipInfo.isZip) {
-    error(`dist/${skyFilename} is NOT a valid PK-ZIP archive! (Magic bytes: ${skyBuf.slice(0, 4).toString('hex')}). SkyStream will fail with "Invalid .sky: Missing plugin.json".`);
+    error(`dist/${skyFilename} is NOT a valid PK-ZIP archive! (Magic bytes: ${skyBuf.slice(0, 4).toString('hex')}). Aether will fail with "Invalid .sky: Missing plugin.json".`);
     continue;
   }
   success(`dist/${skyFilename} is a valid ZIP archive (${skyBuf.length} bytes).`);
@@ -194,6 +194,6 @@ if (hasErrors) {
   console.error('❌ Verification FAILED with errors. Fix before pushing.');
   process.exit(1);
 } else {
-  console.log('🎉 Verification PASSED! All plugins comply with SkyStream V2 standard.');
+  console.log('🎉 Verification PASSED! All plugins comply with Aether V2 standard.');
   process.exit(0);
 }

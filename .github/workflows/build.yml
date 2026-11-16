@@ -33,6 +33,17 @@ jobs:
       - name: Clean old builds
         run: rm -f $GITHUB_WORKSPACE/builds/*.cs3
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Verify and Package Aether Plugins
+        run: |
+          cd $GITHUB_WORKSPACE/src
+          node scripts/verify-repo.js
+          node pack_plugin.js
+
       - name: Setup JDK 17
         uses: actions/setup-java@v4
         with:
