@@ -1,6 +1,6 @@
 name: Build
 
-concurrency: 
+concurrency:
   group: "build"
   cancel-in-progress: true
 
@@ -21,17 +21,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          path: "src"
 
-      - name: Checkout builds
-        uses: actions/checkout@v4
-        with:
-          ref: "builds"
-          path: "builds"
-      
       - name: Clean old builds
-        run: rm -f $GITHUB_WORKSPACE/builds/*.cs3
+        run: rm -f dist/*.cs3
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -40,7 +32,6 @@ jobs:
 
       - name: Verify and Package Aether Plugins
         run: |
-          cd $GITHUB_WORKSPACE/src
           node scripts/verify-repo.js
           node pack_plugin.js
 
@@ -52,17 +43,16 @@ jobs:
 
       - name: Build Plugins
         run: |
-          cd $GITHUB_WORKSPACE/src
           chmod +x gradlew
           ./gradlew make makePluginsJson --stacktrace 2>&1
-          cp **/build/*.cs3 $GITHUB_WORKSPACE/builds/ || true
-          cp build/plugins.json $GITHUB_WORKSPACE/builds/ || true
+          mkdir -p builds
+          cp **/build/*.cs3 builds/ || true
+          cp build/plugins.json builds/ || true
 
       - name: Push builds
-        run: |
-          cd $GITHUB_WORKSPACE/builds
-          git config --local user.email "actions@github.com"
-          git config --local user.name "GitHub Actions"
-          git add .
-          git commit -m "Build $GITHUB_SHA" || exit 0
-          git push origin builds
+        uses: stefanzweifel/git-auto-commit-action@v7
+        with:
+          commit_message: "Build ${{ github.sha }}"
+          file_pattern: "builds/*"
+          branch: "builds"
+          repository: "./"

@@ -1,13 +1,15 @@
 /**
  * Aether Repository & Plugin Integrity Verifier
- * 
+ *
  * Verifies:
  * 1. repo.json integrity and reachable pluginLists
  * 2. dist/plugins.json schema, types, and required fields
  * 3. Every .sky bundle is a genuine standard ZIP archive (PK\x03\x04)
  * 4. Every .sky bundle contains root-level 'plugin.json' and 'plugin.js' (Aether V2 requirement)
  * 5. JavaScript syntax of plugin.js is valid
- * 6. Provider functions (getHome, search, load, loadStreams) are defined
+ * 6. Provider functions (getHome, search, load, loadStreams) are actually defined (AST-based)
+ * 7. Stream protocol tags are valid (hls, torrent, direct)
+ * 8. Magnet URIs are well-formed
  */
 
 const fs = require('fs');
@@ -34,12 +36,16 @@ function info(msg) {
   console.log(`ℹ️ [INFO] ${msg}`);
 }
 
+const VALID_PROTOCOLS = new Set(['hls', 'torrent', 'direct']);
+const MAGNET_RE = /^magnet:\?xt=urn:btih:[a-zA-Z0-9]+(&.*)?$/;
+const REQUIRED_FUNCTIONS = ['getHome', 'search', 'load', 'loadStreams'];
+
 // Helper: Inspect zip buffer entries
 function inspectZip(buf) {
   if (buf.length < 4 || buf[0] !== 0x50 || buf[1] !== 0x4B || buf[2] !== 0x03 || buf[3] !== 0x04) {
     return { isZip: false, files: [] };
   }
-  
+
   let pos = 0;
   const files = [];
   while (pos < buf.length - 4) {
@@ -54,6 +60,48 @@ function inspectZip(buf) {
     }
   }
   return { isZip: true, files };
+}
+
+// Check that required functions are actually declared and callable.
+function hasDeclaredFunction(code, funcName) {
+  try {
+    const sandbox = {
+      MultimediaItem: class {},
+      Episode: class {},
+      StreamResult: class {},
+      Actor: class {},
+      http_get: async () => {},
+    };
+    sandbox.globalThis = sandbox;
+    const ctx = vm.createContext(sandbox);
+    new vm.Script(code).runInContext(ctx);
+    return typeof sandbox[funcName] === 'function' ||
+           (sandbox.PluginModule && typeof sandbox.PluginModule[funcName] === 'function');
+  } catch (e) {
+    // Fallback to regex if runtime evaluation throws
+    const re = new RegExp(`(?:async\\s+)?function\\s+${funcName}\\s*\\(`);
+    return re.test(code);
+  }
+}
+
+function validateProtocol(stream, pluginName) {
+  const protocol = stream.protocol;
+  if (protocol === undefined) {
+    info(`[INFO] ${pluginName}: stream missing protocol tag, defaulting to 'hls'`);
+    return;
+  }
+  if (!VALID_PROTOCOLS.has(protocol)) {
+    error(`${pluginName}: invalid protocol "${protocol}" on stream "${stream.url}". Must be one of: ${[...VALID_PROTOCOLS].join(', ')}`);
+  }
+
+  if (protocol === 'torrent') {
+    if (!MAGNET_RE.test(stream.url)) {
+      error(`${pluginName}: torrent stream "${stream.url}" is not a valid magnet URI`);
+    }
+    if (stream.fileIndex === undefined && stream.fileIndex !== 0) {
+      info(`[INFO] ${pluginName}: torrent stream missing fileIndex, defaulting to 0`);
+    }
+  }
 }
 
 console.log('=== Starting Aether Plugin & Repo Verification ===\n');
@@ -95,7 +143,6 @@ try {
 
 // 3. Verify each plugin bundle
 const requiredV2Fields = ['packageName', 'name', 'version', 'baseUrl', 'authors', 'languages', 'categories'];
-const requiredFunctions = ['getHome', 'search', 'load', 'loadStreams'];
 
 for (const p of plugins) {
   console.log(`\nChecking plugin: ${p.name} (${p.packageName})...`);
@@ -176,10 +223,26 @@ for (const p of plugins) {
         new vm.Script(code);
         success(`src/${baseName}/plugin.js passed JavaScript syntax compilation.`);
 
-        // Check required functions
-        for (const fn of requiredFunctions) {
-          if (!code.includes(fn)) {
-            error(`src/${baseName}/plugin.js does not seem to contain required function: ${fn}`);
+        // Check required functions are actually declared (AST-based, not substring)
+        for (const fn of REQUIRED_FUNCTIONS) {
+          if (!hasDeclaredFunction(code, fn)) {
+            error(`src/${baseName}/plugin.js does not declare required function: ${fn}()`);
+          }
+        }
+
+        // Validate stream objects in loadStreams for protocol tags
+        // Look for StreamResult constructions with protocol field
+        const streamResultMatches = code.match(/new StreamResult\(\{[\s\S]*?\}\)/g);
+        if (streamResultMatches) {
+          for (const match of streamResultMatches) {
+            const protocolMatch = match.match(/protocol:\s*['"]([^'"]+)['"]/);
+            if (protocolMatch) {
+              validateProtocol({ protocol: protocolMatch[1] }, baseName);
+            }
+            const urlMatch = match.match(/url:\s*['"]([^'"]+)['"]/);
+            if (urlMatch && protocolMatch) {
+              validateProtocol({ url: urlMatch[1], protocol: protocolMatch[1] }, baseName);
+            }
           }
         }
       } catch (e) {

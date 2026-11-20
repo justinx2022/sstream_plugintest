@@ -10,6 +10,8 @@ var PluginModule = (() => {
         this.source = t.source || t.name;
         this.name = t.name || t.source;
         this.headers = t.headers || {};
+        this.protocol = t.protocol || 'hls';
+        this.file_index = t.file_index;
         if (t.quality) this.quality = t.quality;
         if (t.size) this.size = t.size;
         if (t.type) this.type = t.type;
@@ -730,6 +732,7 @@ var PluginModule = (() => {
                           quality: q,
                           type: isHLS ? 'hls' : 'mp4',
                           isM3U8: isHLS,
+                          protocol: isHLS ? 'hls' : 'direct',
                           headers: {
                             // Keep the CDN request free of the API site's
                             // Referer/Origin. Those headers make its HLS
@@ -813,24 +816,77 @@ var PluginModule = (() => {
           } catch (e) {}
         })();
 
+        // 3. Torrentio Multi-Tracker Streams (P2P Torrent Fallback)
+        var torrentioPromise = (async function() {
+          try {
+            if (!imdbId) return;
+            var tType = type === 'movie' ? 'movie' : 'series';
+            var tId = imdbId + (type === 'series' ? (':' + season + ':' + episode) : '');
+            var tUrl = 'https://torrentio.strem.fun/stream/' + tType + '/' + tId + '.json';
+            var tData = await fetchJson(tUrl, {
+              'User-Agent': DEFAULT_HEADERS['User-Agent']
+            });
+
+            if (tData && Array.isArray(tData.streams) && tData.streams.length > 0) {
+              var trackers = [
+                'udp://tracker.opentrackr.org:1337/announce',
+                'udp://open.stealth.si:80/announce',
+                'udp://tracker.torrent.eu.org:451/announce'
+              ];
+              var trackerParams = trackers.map(function(tr) {
+                return '&tr=' + encodeURIComponent(tr);
+              }).join('');
+
+              var count = 0;
+              for (var ti = 0; ti < tData.streams.length && count < 6; ti++) {
+                var item = tData.streams[ti];
+                if (!item || !item.infoHash) continue;
+
+                var rawTitle = (item.title || '').split('\n')[0] || title;
+                var q = parseQuality(rawTitle || item.name);
+                var magnet = 'magnet:?xt=urn:btih:' + item.infoHash + '&dn=' + encodeURIComponent(rawTitle) + trackerParams;
+
+                if (!seenUrls.has(magnet)) {
+                  seenUrls.add(magnet);
+                  count++;
+                  var qLabel = q ? (q + 'p') : 'HD';
+                  streams.push(new Nt({
+                    url: magnet,
+                    source: 'Torrentio P2P (' + qLabel + ')',
+                    name: '⚡ Torrentio [' + qLabel + ' Torrent]',
+                    quality: q || 1080,
+                    protocol: 'torrent',
+                    type: 'torrent',
+                    file_index: item.fileIdx !== undefined ? item.fileIdx : 0,
+                    isM3U8: false
+                  }));
+                }
+              }
+            }
+          } catch (e) {}
+        })();
+
         // Execute all extractors in parallel with timeout protection
         await Promise.all([
           withTimeout(hcsPromise, 10000),
           withTimeout(archivePromise, 8000),
           withTimeout(vidapiPromise, 8000),
-          withTimeout(vixsrcPromise, 8000)
+          withTimeout(vixsrcPromise, 8000),
+          withTimeout(torrentioPromise, 8000)
         ]);
 
         // VixSrc is the confirmed reliable stream for this catalogue. Keep it
         // first for Auto selection, then direct HCS links, then other mirrors
-        // (including VidApi as a fallback). Preserve quality ordering per tier.
+        // (including VidApi as a fallback), then Torrentio P2P fallback.
+        // Preserve quality ordering per tier.
         streams.sort(function(a, b) {
           function rank(stream) {
             if (/^VixSrc Multi-Audio/i.test(stream.source || '')) return 0;
             if (/^Internet Archive Public Domain/i.test(stream.source || '')) return 1;
-            if (stream.isHcs || stream.type === 'mkv' || stream.type === 'mp4' || !stream.isM3U8) return 2;
+            if (stream.isHcs || stream.type === 'mkv' || stream.type === 'mp4' || (!stream.isM3U8 && stream.protocol !== 'torrent')) return 2;
             if (/^VidApi Server/i.test(stream.source || '')) return 3;
-            return 4;
+            if (/^Torrentio/i.test(stream.source || '') || stream.protocol === 'torrent') return 4;
+            return 5;
           }
           var aRank = rank(a);
           var bRank = rank(b);

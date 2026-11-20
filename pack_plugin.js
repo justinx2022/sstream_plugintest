@@ -2,7 +2,6 @@ const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 
-// Cross-platform pure Node.js ZIP archive generator (Zero external dependencies)
 const crcTable = new Int32Array(256);
 for (let i = 0; i < 256; i++) {
   let c = i;
@@ -20,6 +19,13 @@ function computeCrc32(buf) {
   return (crc ^ -1) >>> 0;
 }
 
+function readFileSafe(filePath) {
+  if (!fs.existsSync(filePath)) {
+    throw new Error(`Source file not found: ${filePath}`);
+  }
+  return fs.readFileSync(filePath);
+}
+
 function createZipArchive(files, outputPath) {
   const parts = [];
   const centralDirectory = [];
@@ -27,7 +33,7 @@ function createZipArchive(files, outputPath) {
 
   for (const file of files) {
     const filenameBuf = Buffer.from(file.name, 'utf8');
-    const data = fs.readFileSync(file.path);
+    const data = readFileSafe(file.path);
     const compressed = zlib.deflateRawSync(data);
     const crc = computeCrc32(data);
 
@@ -84,6 +90,7 @@ function createZipArchive(files, outputPath) {
 
   const fullZip = Buffer.concat([...parts, cdBuffer, eocd]);
   fs.writeFileSync(outputPath, fullZip);
+  return fullZip.length;
 }
 
 const repoDir = __dirname;
@@ -98,22 +105,47 @@ const plugins = [
   { dir: 'wlext', bundle: 'dev.justin.wlext_v5' },
 ];
 
+let anyFailed = false;
+
 for (const { dir, bundle } of plugins) {
   const pluginDir = path.join(repoDir, 'src', dir);
   const outSky = path.join(distDir, `${bundle}.sky`);
 
+  const pluginJs = path.join(pluginDir, 'plugin.js');
+  const pluginJson = path.join(pluginDir, 'plugin.json');
+
+  if (!fs.existsSync(pluginJs)) {
+    console.error(`❌ [ERROR] Missing plugin.js for ${bundle} at ${pluginJs}`);
+    anyFailed = true;
+    continue;
+  }
+  if (!fs.existsSync(pluginJson)) {
+    console.error(`❌ [ERROR] Missing plugin.json for ${bundle} at ${pluginJson}`);
+    anyFailed = true;
+    continue;
+  }
+
   if (fs.existsSync(outSky)) fs.unlinkSync(outSky);
 
   console.log(`Packaging ${bundle}...`);
-  createZipArchive(
-    [
-      { name: 'plugin.js', path: path.join(pluginDir, 'plugin.js') },
-      { name: 'plugin.json', path: path.join(pluginDir, 'plugin.json') }
-    ],
-    outSky
-  );
-
-  console.log(`Generated: ${outSky} (${fs.statSync(outSky).size} bytes)`);
+  try {
+    const size = createZipArchive(
+      [
+        { name: 'plugin.js', path: pluginJs },
+        { name: 'plugin.json', path: pluginJson }
+      ],
+      outSky
+    );
+    console.log(`Generated: ${outSky} (${size} bytes)`);
+  } catch (e) {
+    console.error(`❌ [ERROR] Failed to package ${bundle}: ${e.message}`);
+    anyFailed = true;
+  }
 }
 
-console.log('All plugins packaged successfully via cross-platform Node.js.');
+if (anyFailed) {
+  console.error('\n❌ Some plugins failed to package. Fix errors above.');
+  process.exit(1);
+}
+
+console.log('\nAll plugins packaged successfully via cross-platform Node.js.');
