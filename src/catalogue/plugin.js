@@ -828,23 +828,40 @@ var PluginModule = (() => {
             });
 
             if (tData && Array.isArray(tData.streams) && tData.streams.length > 0) {
-              var trackers = [
+              var defaultTrackers = [
                 'udp://tracker.opentrackr.org:1337/announce',
                 'udp://open.stealth.si:80/announce',
-                'udp://tracker.torrent.eu.org:451/announce'
+                'udp://tracker.torrent.eu.org:451/announce',
+                'udp://open.demonii.com:1337/announce',
+                'udp://open.tracker.cl:1337/announce',
+                'udp://explodie.org:6969/announce',
+                'udp://tracker.qu.ax:6969/announce',
+                'udp://tracker.coppersurfer.tk:6969/announce'
               ];
-              var trackerParams = trackers.map(function(tr) {
-                return '&tr=' + encodeURIComponent(tr);
-              }).join('');
 
               var count = 0;
               for (var ti = 0; ti < tData.streams.length && count < 6; ti++) {
                 var item = tData.streams[ti];
                 if (!item || !item.infoHash) continue;
 
+                var trackerList = defaultTrackers.slice();
+                if (Array.isArray(item.sources)) {
+                  for (var si = 0; si < item.sources.length; si++) {
+                    var sStr = item.sources[si];
+                    if (typeof sStr === 'string' && sStr.indexOf('tracker:') === 0) {
+                      var tr = sStr.substring(8);
+                      if (trackerList.indexOf(tr) === -1) trackerList.push(tr);
+                    }
+                  }
+                }
+                var trackerParams = trackerList.map(function(tr) {
+                  return '&tr=' + encodeURIComponent(tr);
+                }).join('');
+
                 var rawTitle = (item.title || '').split('\n')[0] || title;
                 var q = parseQuality(rawTitle || item.name);
-                var magnet = 'magnet:?xt=urn:btih:' + item.infoHash + '&dn=' + encodeURIComponent(rawTitle) + trackerParams;
+                var fIdx = item.fileIdx !== undefined ? item.fileIdx : 0;
+                var magnet = 'magnet:?xt=urn:btih:' + item.infoHash + '&dn=' + encodeURIComponent(rawTitle) + '&index=' + fIdx + trackerParams;
 
                 if (!seenUrls.has(magnet)) {
                   seenUrls.add(magnet);
@@ -857,7 +874,7 @@ var PluginModule = (() => {
                     quality: q || 1080,
                     protocol: 'torrent',
                     type: 'torrent',
-                    file_index: item.fileIdx !== undefined ? item.fileIdx : 0,
+                    file_index: fIdx,
                     isM3U8: false
                   }));
                 }
@@ -875,17 +892,17 @@ var PluginModule = (() => {
           withTimeout(torrentioPromise, 8000)
         ]);
 
-        // VixSrc is the confirmed reliable stream for this catalogue. Keep it
-        // first for Auto selection, then direct HCS links, then other mirrors
-        // (including VidApi as a fallback), then Torrentio P2P fallback.
+        // VixSrc is the primary high-speed stream. All HLS/HTTP streams take PRIORITY (ranks 0-4).
+        // Torrent streams are strictly a selectable fallback (rank 99) when no HLS streams exist.
         // Preserve quality ordering per tier.
         streams.sort(function(a, b) {
           function rank(stream) {
+            if (/^Torrentio/i.test(stream.source || '') || stream.protocol === 'torrent' || stream.type === 'torrent') return 99;
             if (/^VixSrc Multi-Audio/i.test(stream.source || '')) return 0;
             if (/^Internet Archive Public Domain/i.test(stream.source || '')) return 1;
             if (stream.isHcs || stream.type === 'mkv' || stream.type === 'mp4' || (!stream.isM3U8 && stream.protocol !== 'torrent')) return 2;
             if (/^VidApi Server/i.test(stream.source || '')) return 3;
-            if (/^Torrentio/i.test(stream.source || '') || stream.protocol === 'torrent') return 4;
+            if (stream.isM3U8) return 4;
             return 5;
           }
           var aRank = rank(a);
